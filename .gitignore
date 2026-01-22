@@ -1,0 +1,141 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+.env
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# ============================================
+# ONEDRIVE SPECIFIC - CRITICAL
+# ============================================
+
+# OneDrive temporary files
+~$*
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# OneDrive conflict files
+*_conflict_*
+*.sync-conflict-*
+
+# OneDrive lock files
+*.lock
+*.lck
+
+# OneDrive metadata
+.oneDrive
+.OneDrive
+OneDriveTemp/
+
+# Office temporary files (if using Excel/Word)
+~$*.xlsx
+~$*.xls
+~$*.docx
+~$*.doc
+
+# ============================================
+# IDE & EDITORS
+# ============================================
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Cursor
+.cursor/
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ============================================
+# OS SPECIFIC
+# ============================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================
+# PROJECT SPECIFIC
+# ============================================
+
+# Supabase
+.supabase/
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads (temporaires, avant stockage Supabase)
+uploads/
+temp/
+
+# Python (si scripts Python générés)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/

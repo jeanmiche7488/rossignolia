@@ -1,0 +1,35 @@
+# CURSOR PROJECT CONSTITUTION
+
+## 1. SCOPE AUTHORITY (ANTI-REGRESSION)
+- **Zero-Side-Effect Policy:** If I ask for a CSS change, NEVER touch the Backend logic or SQL schema.
+- **File Locking:** NEVER modify `schema.sql` or Zod definitions without explicit user confirmation.
+- **Modular Isolation:** Do not mix "Stock" logic with "Admin" logic. Keep folders separate (`@/modules/stock` vs `@/app/admin`).
+
+## 2. DATA SECURITY
+- **Tenant Isolation:** Every DB query MUST have `where tenant_id = ...`.
+- **Sanitization:** Use Zod for all API inputs.
+
+## 3. UI/UX INTEGRITY
+- **Design System:** Follow "Linear/Vercel" style (Clean, Dense, Gray-scale).
+- **Stability:** Do not change the font family or global layout unless explicitly asked.
+- **Components:** Use `shadcn-ui` primitives. Do not invent custom UI widgets if a standard one exists.
+
+## 4. PROCESS
+- **Atomic Steps:** Implement one Phase at a time. Wait for validation.
+- **Git:** Suggest `git add/commit` after every successful feature.
+
+## 5. AI CONFIGURATION (DETERMINISM)
+    - **Gemini Parameters:** For ALL Mapping and Cleaning tasks, YOU MUST set the API call `generationConfig` to `{ temperature: 0.0, topK: 1 }`.
+    - **JSON Mode:** Always use `response_mime_type: "application/json"` for structured data tasks.
+    - **Reproducibility:** The AI Output must be strictly identical if the same file is uploaded twice.
+
+## 6. ARCHITECTURE PRINCIPLES
+- **Multi-Tenant First:** Every feature must be designed with tenant isolation in mind from day 1.
+- **Modularity:** Code must be organized by module (`@/modules/stock`, `@/modules/demand-planning`, etc.).
+- **White Box Transparency:** All AI-generated analysis must include the Python code that justifies it.
+- **No Data Left Behind:** All unmapped columns must be preserved in the `attributes` JSONB field.
+
+## 7. CODE QUALITY
+- **Type Safety:** Use TypeScript strictly. No `any` types without explicit justification.
+- **Validation:** All user inputs must be validated with Zod schemas.
+- **Error Handling:** Provide meaningful error messages with context for debugging.
