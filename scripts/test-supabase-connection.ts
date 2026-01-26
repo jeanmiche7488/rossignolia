@@ -3,7 +3,7 @@
  * Run with: npx tsx scripts/test-supabase-connection.ts
  */
 
-import { createServerClient } from '@/lib/db/supabase';
+import { createServerClient } from '@/lib/db/supabase-server';
 
 async function testConnection() {
   console.log('🔍 Testing Supabase connection...\n');

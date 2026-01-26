@@ -3,11 +3,11 @@
  * Ensures tenant isolation across all operations
  */
 
-import { createBrowserClient } from '@/lib/db/supabase';
+import { createBrowserClient } from '@/lib/db/supabase-client';
 
 /**
  * Get the current user's tenant ID
- * @returns Promise<string | null> - The tenant ID or null if not found
+ * @returns Promise<string | null> - The tenant ID or null if SUPER_ADMIN or not found
  */
 export async function getCurrentTenantId(): Promise<string | null> {
   const supabase = createBrowserClient();
@@ -23,11 +23,16 @@ export async function getCurrentTenantId(): Promise<string | null> {
 
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('tenant_id')
+    .select('tenant_id, role')
     .eq('id', user.id)
     .single();
 
   if (profileError || !profile) {
+    return null;
+  }
+
+  // SUPER_ADMIN doesn't have a tenant_id
+  if (profile.role === 'SUPER_ADMIN') {
     return null;
   }
 
