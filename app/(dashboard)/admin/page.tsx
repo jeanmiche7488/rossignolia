@@ -88,15 +88,32 @@ export default async function AdminPage() {
     .limit(10);
 
   // Get last_sign_in_at for each user from auth.users
-  const usersWithLastSignIn = await Promise.all(
-    (recentUsers || []).map(async (user) => {
-      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(user.id);
-      return {
+  // Use listUsers to avoid rate limiting (more efficient than multiple getUserById calls)
+  let usersWithLastSignIn = recentUsers || [];
+  if (recentUsers && recentUsers.length > 0) {
+    try {
+      // Get all auth users in one call (limited to 1000, which should be enough)
+      const { data: { users: authUsers } } = await supabaseAdmin.auth.admin.listUsers({
+        page: 1,
+        perPage: 1000,
+      });
+      
+      // Create a map for quick lookup
+      const authUsersMap = new Map(
+        authUsers?.map((au) => [au.id, au.last_sign_in_at]) || []
+      );
+      
+      // Merge with profile data
+      usersWithLastSignIn = (recentUsers || []).map((user) => ({
         ...user,
-        last_sign_in_at: authUser?.user?.last_sign_in_at || null,
-      };
-    })
-  );
+        last_sign_in_at: authUsersMap.get(user.id) || null,
+      }));
+    } catch (error) {
+      console.warn('Could not fetch auth users, using profile data only:', error);
+      // Fallback: use profile data without last_sign_in_at
+      usersWithLastSignIn = recentUsers || [];
+    }
+  }
 
   return (
     <div className="container mx-auto p-8 space-y-8">
@@ -119,6 +136,12 @@ export default async function AdminPage() {
             <Button variant="outline" className="transition-all hover:scale-105">
               <Users className="mr-2 h-4 w-4" />
               Gérer les utilisateurs
+            </Button>
+          </Link>
+          <Link href="/admin/prompts">
+            <Button variant="outline" className="transition-all hover:scale-105">
+              <Mail className="mr-2 h-4 w-4" />
+              Prompts système
             </Button>
           </Link>
         </div>

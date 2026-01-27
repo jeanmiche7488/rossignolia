@@ -74,15 +74,33 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
     }
   );
 
-  const usersWithLastSignIn = await Promise.all(
-    (users || []).map(async (user) => {
-      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(user.id);
-      return {
+  // Get last_sign_in_at for each user from auth.users
+  // Use listUsers to avoid rate limiting (more efficient than multiple getUserById calls)
+  let usersWithLastSignIn = users || [];
+  if (users && users.length > 0) {
+    try {
+      // Get all auth users in one call (limited to 1000, which should be enough)
+      const { data: { users: authUsers } } = await supabaseAdmin.auth.admin.listUsers({
+        page: 1,
+        perPage: 1000,
+      });
+      
+      // Create a map for quick lookup
+      const authUsersMap = new Map(
+        authUsers?.map((au) => [au.id, au.last_sign_in_at]) || []
+      );
+      
+      // Merge with profile data
+      usersWithLastSignIn = (users || []).map((user) => ({
         ...user,
-        last_sign_in_at: authUser?.user?.last_sign_in_at || null,
-      };
-    })
-  );
+        last_sign_in_at: authUsersMap.get(user.id) || null,
+      }));
+    } catch (error) {
+      console.warn('Could not fetch auth users, using profile data only:', error);
+      // Fallback: use profile data without last_sign_in_at
+      usersWithLastSignIn = users || [];
+    }
+  }
 
   const getRoleBadge = (role: string) => {
     const variants: Record<string, string> = {

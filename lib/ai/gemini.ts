@@ -15,11 +15,16 @@ const getGeminiClient = () => {
 };
 
 /**
- * Get the Gemini model (1.5 Pro)
+ * Get the Gemini model
+ * Using gemini-2.5-flash (latest stable version)
+ * If you need to use a different model, change it here
+ * Available models: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, etc.
  */
 const getModel = () => {
   const client = getGeminiClient();
-  return client.getGenerativeModel({ model: "gemini-1.5-pro" });
+  // Use gemini-2.5-flash (stable, fast, and widely available)
+  // Alternative: "gemini-2.5-pro" (more powerful), "gemini-2.0-flash" (older stable)
+  return client.getGenerativeModel({ model: "gemini-2.5-flash" });
 };
 
 /**
@@ -30,7 +35,7 @@ const DETERMINISTIC_CONFIG = {
   temperature: 0.0,
   topK: 1,
   topP: 1,
-  maxOutputTokens: 8192,
+  maxOutputTokens: 32768, // Augmenté pour éviter les réponses tronquées (32k tokens)
 };
 
 /**
@@ -58,45 +63,71 @@ export interface CleaningInput {
   data: Record<string, unknown>[];
   mappedColumns: Record<string, string>;
   issues?: string[];
+  tenantId?: string | null;
+  useDbPrompt?: boolean;
 }
 
 export interface AdvisorInput {
   stockEntries: Record<string, unknown>[];
   analysisMetadata?: Record<string, unknown>;
+  tenantId?: string | null;
+  useDbPrompt?: boolean;
 }
 
 /**
  * Mapping Prompt
  * Maps CSV/Excel columns to our schema fields
  */
-export async function mapColumns(input: MappingInput): Promise<{
+export interface MapColumnsOptions {
+  tenantId?: string | null;
+  useDbPrompt?: boolean;
+}
+
+export async function mapColumns(
+  input: MappingInput,
+  options: MapColumnsOptions = {}
+): Promise<{
   mappedColumns: Record<string, string>;
   confidence: number;
   reasoning: string;
 }> {
   const model = getModel();
 
-  const prompt = `
+  // Try to get prompt from DB, fallback to default
+  let promptTemplate: string | null = null;
+  if (options.useDbPrompt !== false && options.tenantId !== undefined) {
+    promptTemplate = await getPromptFromDB(options.tenantId, 'stock', 'mapping');
+  }
+
+  // Default prompt if not found in DB
+  const defaultPrompt = `
 Tu es un expert en mapping de données logistiques. 
 Analyse les colonnes suivantes et mappe-les vers notre schéma de stock.
 
-Colonnes à mapper: ${input.columns.join(", ")}
+Colonnes à mapper: {columns}
 
-${input.sampleData ? `Données d'exemple (premières lignes):\n${JSON.stringify(input.sampleData.slice(0, 3), null, 2)}` : ""}
+{sampleData}
 
-${input.context ? `Contexte: ${input.context}` : ""}
+{context}
 
-Schéma cible:
-- sku: Code SKU/Article
-- product_name: Nom du produit
-- quantity: Quantité en stock
-- unit_cost: Coût unitaire
-- total_value: Valeur totale
-- location: Emplacement/Entrepôt
-- category: Catégorie
-- supplier: Fournisseur
-- last_movement_date: Date du dernier mouvement
-- days_since_last_movement: Jours depuis dernier mouvement
+Schéma cible (CHAMPS OBLIGATOIRES marqués d'un *):
+- sku*: Code SKU/Article/Produit (OBLIGATOIRE - cherche: SKU, EAN, Code, Référence, Codigo, Article, Product ID, Item ID, etc.)
+- product_name: Nom du produit (cherche: Product Name, Nom, Désignation, Description, Item, Article Name, etc.)
+- quantity*: Quantité en stock (OBLIGATOIRE - cherche: Quantity, Stock, Qté, Unidades, Amount, Qty, Stock Level, etc.)
+- unit_cost: Coût unitaire (cherche: Cost, Price, Prix, Coste, Unit Cost, Unit Price, etc.)
+- total_value: Valeur totale (cherche: Total, Value, Valeur, Total Value, Montant, etc.)
+- location: Emplacement/Entrepôt (cherche: Location, Warehouse, Entrepôt, Depot, Almacen, etc.)
+- category: Catégorie (cherche: Category, Catégorie, Type, Categoria, etc.)
+- supplier: Fournisseur (cherche: Supplier, Fournisseur, Vendor, Proveedor, etc.)
+- last_movement_date: Date du dernier mouvement (cherche: Date, Last Movement, Dernier Mouvement, Fecha, etc.)
+- days_since_last_movement: Jours depuis dernier mouvement (cherche: Days, Jours, Dias, Age, etc.)
+
+RÈGLES CRITIQUES:
+1. Les champs marqués * (sku et quantity) sont OBLIGATOIRES - tu DOIS trouver au moins une colonne correspondante
+2. Pour sku: accepte EAN, Code, Référence, Codigo, Article ID, Product Code, etc. - tout identifiant unique de produit
+3. Pour quantity: accepte Stock, Qté, Unidades, Amount, Qty, Stock Level, etc. - toute colonne représentant une quantité
+4. Si plusieurs colonnes peuvent correspondre à un même champ, choisis la plus pertinente
+5. Si une colonne ne correspond clairement à aucun champ, ne l'inclus pas dans mappedColumns
 
 Réponds UNIQUEMENT avec un JSON valide de cette structure:
 {
@@ -104,16 +135,30 @@ Réponds UNIQUEMENT avec un JSON valide de cette structure:
     "colonne_source": "champ_cible"
   },
   "confidence": 0.95,
-  "reasoning": "Explication du mapping"
+  "reasoning": "Explication du mapping, notamment pour les champs obligatoires"
 }
 
 IMPORTANT: 
 - Utilise UNIQUEMENT les champs listés ci-dessus
+- Les champs sku et quantity DOIVENT être mappés si possible (cherche activement des correspondances)
 - Si une colonne ne correspond à aucun champ, ne l'inclus pas dans mappedColumns
 - Les colonnes non mappées seront préservées dans le champ "attributes"
 - Le JSON doit être valide et parsable
 `;
 
+  const template = promptTemplate || defaultPrompt;
+  const { replacePromptPlaceholders } = await import('./prompts');
+  
+  const prompt = replacePromptPlaceholders(template, {
+    columns: input.columns.join(", "),
+    sampleData: input.sampleData 
+      ? `Données d'exemple (premières lignes):\n${JSON.stringify(input.sampleData.slice(0, 3), null, 2)}`
+      : "",
+    context: input.context || "",
+  });
+
+  console.log('[Gemini Map] Appel à Gemini avec prompt (longueur:', prompt.length, 'caractères)');
+  
   const result = await model.generateContent({
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: {
@@ -125,14 +170,24 @@ IMPORTANT:
   const response = result.response;
   const text = response.text();
   
+  console.log('[Gemini Map] Réponse reçue de Gemini');
+  console.log('[Gemini Map] Longueur de la réponse:', text.length, 'caractères');
+  
   try {
     const parsed = JSON.parse(text);
+    console.log('[Gemini Map] JSON parsé avec succès');
+    console.log('[Gemini Map] Confiance:', parsed.confidence);
+    console.log('[Gemini Map] Nombre de colonnes mappées:', Object.keys(parsed.mappedColumns || {}).length);
+    
     return {
       mappedColumns: parsed.mappedColumns || {},
       confidence: parsed.confidence || 0.5,
       reasoning: parsed.reasoning || "",
     };
   } catch (error) {
+    console.error('[Gemini Map] ERREUR de parsing JSON');
+    console.error('[Gemini Map] Erreur:', error);
+    console.error('[Gemini Map] Réponse complète:', text);
     throw new Error(`Failed to parse Gemini mapping response: ${error}`);
   }
 }
@@ -153,18 +208,22 @@ export async function cleanData(input: CleaningInput): Promise<{
 }> {
   const model = getModel();
 
-  const prompt = `
+  // Try to get prompt from DB, fallback to default
+  let promptTemplate: string | null = null;
+  if (input.useDbPrompt !== false && input.tenantId !== undefined) {
+    promptTemplate = await getPromptFromDB(input.tenantId, 'stock', 'cleaning');
+  }
+
+  // Default prompt if not found in DB
+  const defaultPrompt = `
 Tu es un expert en nettoyage de données logistiques.
 Nettoie et normalise les données suivantes selon le mapping fourni.
 
-Données à nettoyer (${input.data.length} lignes):
-${JSON.stringify(input.data.slice(0, 10), null, 2)}
-${input.data.length > 10 ? `... (${input.data.length - 10} lignes supplémentaires)` : ""}
+Données à nettoyer: {data}
 
-Mapping:
-${JSON.stringify(input.mappedColumns, null, 2)}
+Mapping: {mappedColumns}
 
-${input.issues ? `Problèmes identifiés:\n${input.issues.join("\n")}` : ""}
+{issues}
 
 Règles de nettoyage:
 1. Normaliser les formats de dates (ISO 8601: YYYY-MM-DD)
@@ -203,6 +262,18 @@ IMPORTANT:
 - Le pythonCode doit être du code Python valide et exécutable
 `;
 
+  const template = promptTemplate || defaultPrompt;
+  const { replacePromptPlaceholders } = await import('./prompts');
+  
+  const prompt = replacePromptPlaceholders(template, {
+    data: JSON.stringify(input.data.slice(0, 10), null, 2) + 
+          (input.data.length > 10 ? `\n... (${input.data.length - 10} lignes supplémentaires)` : ""),
+    mappedColumns: JSON.stringify(input.mappedColumns, null, 2),
+    issues: input.issues ? input.issues.join("\n") : "",
+  });
+
+  console.log('[Gemini Clean] Appel à Gemini avec prompt (longueur:', prompt.length, 'caractères)');
+  
   const result = await model.generateContent({
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: {
@@ -214,8 +285,16 @@ IMPORTANT:
   const response = result.response;
   const text = response.text();
   
+  console.log('[Gemini Clean] Réponse reçue de Gemini');
+  console.log('[Gemini Clean] Longueur de la réponse:', text.length, 'caractères');
+  console.log('[Gemini Clean] Premiers 500 caractères:', text.substring(0, 500));
+  console.log('[Gemini Clean] Derniers 500 caractères:', text.substring(Math.max(0, text.length - 500)));
+  
   try {
     const parsed = JSON.parse(text);
+    console.log('[Gemini Clean] JSON parsé avec succès');
+    console.log('[Gemini Clean] Nombre d\'entrées nettoyées:', parsed.cleanedData?.length || 0);
+    
     return {
       cleanedData: parsed.cleanedData || [],
       cleaningReport: parsed.cleaningReport || {
@@ -227,7 +306,71 @@ IMPORTANT:
       pythonCode: parsed.pythonCode || "",
     };
   } catch (error) {
-    throw new Error(`Failed to parse Gemini cleaning response: ${error}`);
+    console.error('[Gemini Clean] ERREUR de parsing JSON');
+    console.error('[Gemini Clean] Erreur complète:', error);
+    console.error('[Gemini Clean] Position de l\'erreur:', (error as any).message);
+    
+    // Essayer d'extraire le JSON même s'il y a du texte autour ou s'il est tronqué
+    try {
+      console.log('[Gemini Clean] Tentative d\'extraction/réparation du JSON...');
+      
+      // Si la réponse se termine par une virgule ou un objet incomplet, essayer de la compléter
+      let repairedText = text.trim();
+      
+      // Si ça se termine par une virgule, c'est probablement tronqué
+      if (repairedText.endsWith(',') || !repairedText.endsWith('}')) {
+        console.log('[Gemini Clean] JSON semble tronqué, tentative de réparation...');
+        
+        // Compter les accolades ouvertes/fermées
+        const openBraces = (repairedText.match(/\{/g) || []).length;
+        const closeBraces = (repairedText.match(/\}/g) || []).length;
+        
+        // Si on a plus d'accolades ouvertes que fermées, fermer les structures
+        if (openBraces > closeBraces) {
+          // Retirer la dernière virgule si présente
+          repairedText = repairedText.replace(/,\s*$/, '');
+          
+          // Fermer les tableaux et objets manquants
+          const missingCloses = openBraces - closeBraces;
+          for (let i = 0; i < missingCloses; i++) {
+            repairedText += ']';
+          }
+          for (let i = 0; i < missingCloses; i++) {
+            repairedText += '}';
+          }
+          
+          console.log('[Gemini Clean] JSON réparé, tentative de parsing...');
+        }
+      }
+      
+      // Chercher un objet JSON dans la réponse
+      const jsonMatch = repairedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const extractedJson = jsonMatch[0];
+        const parsed = JSON.parse(extractedJson);
+        console.log('[Gemini Clean] JSON extrait/réparé et parsé avec succès');
+        console.log('[Gemini Clean] Nombre d\'entrées nettoyées:', parsed.cleanedData?.length || 0);
+        
+        return {
+          cleanedData: parsed.cleanedData || [],
+          cleaningReport: parsed.cleaningReport || {
+            rowsProcessed: parsed.cleanedData?.length || 0,
+            rowsCleaned: parsed.cleanedData?.length || 0,
+            issues: [],
+            transformations: [],
+          },
+          pythonCode: parsed.pythonCode || "",
+        };
+      }
+    } catch (extractError) {
+      console.error('[Gemini Clean] Échec de l\'extraction/réparation:', extractError);
+    }
+    
+    // Sauvegarder la réponse complète pour debug
+    console.error('[Gemini Clean] Réponse complète de Gemini:');
+    console.error(text);
+    
+    throw new Error(`Failed to parse Gemini cleaning response: ${error}. Response length: ${text.length}, First 200 chars: ${text.substring(0, 200)}`);
   }
 }
 
@@ -259,15 +402,20 @@ export async function generateRecommendations(input: AdvisorInput): Promise<{
 }> {
   const model = getModel();
 
-  const prompt = `
+  // Try to get prompt from DB, fallback to default
+  let promptTemplate: string | null = null;
+  if (input.useDbPrompt !== false && input.tenantId !== undefined) {
+    promptTemplate = await getPromptFromDB(input.tenantId, 'stock', 'advisor');
+  }
+
+  // Default prompt if not found in DB
+  const defaultPrompt = `
 Tu es un expert en analyse logistique et gestion de stock.
 Analyse les données de stock suivantes et génère des recommandations actionnables.
 
-Données de stock (${input.stockEntries.length} entrées):
-${JSON.stringify(input.stockEntries.slice(0, 20), null, 2)}
-${input.stockEntries.length > 20 ? `... (${input.stockEntries.length - 20} entrées supplémentaires)` : ""}
+Données de stock: {stockEntries}
 
-${input.analysisMetadata ? `Métadonnées de l'analyse:\n${JSON.stringify(input.analysisMetadata, null, 2)}` : ""}
+{analysisMetadata}
 
 Types de recommandations possibles:
 - dormant: Stock dormant (pas de mouvement depuis longtemps)
@@ -321,6 +469,15 @@ IMPORTANT:
 - Sois concret et actionnable
 `;
 
+  const template = promptTemplate || defaultPrompt;
+  const { replacePromptPlaceholders } = await import('./prompts');
+  
+  const prompt = replacePromptPlaceholders(template, {
+    stockEntries: JSON.stringify(input.stockEntries.slice(0, 20), null, 2) + 
+                  (input.stockEntries.length > 20 ? `\n... (${input.stockEntries.length - 20} entrées supplémentaires)` : ""),
+    analysisMetadata: input.analysisMetadata ? JSON.stringify(input.analysisMetadata, null, 2) : "",
+  });
+
   const result = await model.generateContent({
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: {
@@ -350,8 +507,8 @@ export async function getPromptFromDB(
   tenantId: string | null,
   moduleCode: string,
   promptType: PromptType
-): Promise<string> {
-  // This will be implemented when we have the DB connection
-  // For now, return empty string (will use inline prompts)
-  return "";
+): Promise<string | null> {
+  const { getSystemPrompt } = await import('./prompts');
+  const prompt = await getSystemPrompt(tenantId, moduleCode, promptType);
+  return prompt?.content || null;
 }

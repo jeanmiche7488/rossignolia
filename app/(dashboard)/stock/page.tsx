@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
 import { isModuleEnabledForTenant, hasModulePermission } from '@/lib/utils/modules';
+import { AnalysisActions } from './analysis-actions';
 
 export default async function StockPage() {
   const supabase = await createServerComponentClient();
@@ -52,13 +53,30 @@ export default async function StockPage() {
   // Check if user has write permission (for creating new analyses)
   const hasWritePermission = await hasModulePermission(user.id, 'stock', 'write');
 
-  // Get analyses for this tenant
+  // Get analyses for this tenant (remove limit to show all)
   const { data: analyses } = await supabase
     .from('analyses')
     .select('*')
     .eq('tenant_id', profile.tenant_id)
-    .order('created_at', { ascending: false })
-    .limit(10);
+    .order('created_at', { ascending: false });
+
+  // Get file counts for each analysis
+  const analysisIds = analyses?.map((a) => a.id) || [];
+  const { data: fileCounts } = analysisIds.length > 0
+    ? await supabase
+        .from('analysis_files')
+        .select('analysis_id')
+        .in('analysis_id', analysisIds)
+    : { data: null };
+
+  // Create a map of analysis_id -> file count
+  const fileCountMap = new Map<string, number>();
+  if (fileCounts) {
+    fileCounts.forEach((file) => {
+      const count = fileCountMap.get(file.analysis_id) || 0;
+      fileCountMap.set(file.analysis_id, count + 1);
+    });
+  }
 
   // Get recommendations count
   const { count: recommendationsCount } = await supabase
@@ -184,47 +202,65 @@ export default async function StockPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {analyses.map((analysis) => (
-                  <TableRow key={analysis.id}>
-                    <TableCell className="font-medium">{analysis.name}</TableCell>
-                    <TableCell>{analysis.file_name || '-'}</TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
-                          analysis.status === 'completed'
-                            ? 'bg-green-100 text-green-700 border border-green-200'
+                {analyses.map((analysis: any) => {
+                  const fileCount = fileCountMap.get(analysis.id) || (analysis.file_name ? 1 : 0);
+                  const fileDisplay = fileCount > 1 
+                    ? `${fileCount} fichiers` 
+                    : analysis.file_name || '-';
+                  
+                  return (
+                    <TableRow key={analysis.id}>
+                      <TableCell className="font-medium">{analysis.name}</TableCell>
+                      <TableCell>{fileDisplay}</TableCell>
+                      <TableCell>
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
+                            analysis.status === 'completed'
+                              ? 'bg-green-100 text-green-700 border border-green-200'
+                              : analysis.status === 'processing'
+                              ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                              : analysis.status === 'mapping_pending'
+                              ? 'bg-orange-100 text-orange-700 border border-orange-200'
+                              : analysis.status === 'failed'
+                              ? 'bg-red-100 text-red-700 border border-red-200'
+                              : 'bg-slate-100 text-slate-700 border border-slate-200'
+                          }`}
+                        >
+                          {analysis.status === 'completed'
+                            ? 'Complétée'
                             : analysis.status === 'processing'
-                            ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                            ? 'En cours'
+                            : analysis.status === 'mapping_pending'
+                            ? 'Mapping en attente'
                             : analysis.status === 'failed'
-                            ? 'bg-red-100 text-red-700 border border-red-200'
-                            : 'bg-slate-100 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        {analysis.status === 'completed'
-                          ? 'Complétée'
-                          : analysis.status === 'processing'
-                          ? 'En cours'
-                          : analysis.status === 'failed'
-                          ? 'Échouée'
-                          : 'En attente'}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      {new Date(analysis.created_at).toLocaleDateString('fr-FR', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Link href={`/stock/${analysis.id}`}>
-                        <Button variant="ghost" size="sm">
-                          Voir
-                        </Button>
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                            ? 'Échouée'
+                            : 'En attente'}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {new Date(analysis.created_at).toLocaleDateString('fr-FR', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                        })}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center gap-2 justify-end">
+                          <Link href={`/stock/${analysis.id}`}>
+                            <Button variant="ghost" size="sm" className="transition-all hover:scale-105">
+                              Voir
+                            </Button>
+                          </Link>
+                          <AnalysisActions
+                            analysisId={analysis.id}
+                            analysisName={analysis.name}
+                            hasWritePermission={hasWritePermission}
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (

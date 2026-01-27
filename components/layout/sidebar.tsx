@@ -12,6 +12,7 @@ import {
   Settings,
   Users,
   Building2,
+  FileText,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -139,18 +140,24 @@ export function Sidebar({ user, tenant, enabledModules = [] }: SidebarProps) {
       href: '/admin/users',
       icon: Users,
     },
+    {
+      title: 'Prompts système',
+      href: '/admin/prompts',
+      icon: FileText,
+    },
   ];
 
   const navItems = isSuperAdmin ? adminNavItems : userNavItems;
 
   // Helper function to check if a nav item is active
   const isNavItemActive = (href: string, currentPath: string) => {
-    // For /admin, only match exactly or paths that start with /admin/ but not /admin/tenants or /admin/users
+    // For /admin, only match exactly or paths that start with /admin/ but not /admin/tenants, /admin/users, or /admin/prompts
     if (href === '/admin') {
       return currentPath === '/admin' || 
              (currentPath.startsWith('/admin/') && 
               !currentPath.startsWith('/admin/tenants') && 
-              !currentPath.startsWith('/admin/users'));
+              !currentPath.startsWith('/admin/users') &&
+              !currentPath.startsWith('/admin/prompts'));
     }
     // For other items, match exactly or if path starts with href + '/'
     return currentPath === href || currentPath?.startsWith(href + '/');
