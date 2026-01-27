@@ -1,6 +1,7 @@
 import { createServerComponentClient } from '@/lib/db/supabase-server';
 import { redirect } from 'next/navigation';
 import { NewAnalysisForm } from './new-analysis-form';
+import { isModuleEnabledForTenant, hasModulePermission } from '@/lib/utils/modules';
 
 export default async function NewAnalysisPage() {
   const supabase = await createServerComponentClient();
@@ -20,6 +21,22 @@ export default async function NewAnalysisPage() {
 
   if (!profile) {
     redirect('/login');
+  }
+
+  // Check if Stock Health module is enabled for this tenant
+  if (!profile.tenant_id) {
+    redirect('/login');
+  }
+
+  const stockModuleEnabled = await isModuleEnabledForTenant(profile.tenant_id, 'stock');
+  if (!stockModuleEnabled) {
+    redirect('/dashboard');
+  }
+
+  // Check if user has write permission for Stock Health
+  const hasWritePermission = await hasModulePermission(user.id, 'stock', 'write');
+  if (!hasWritePermission) {
+    redirect('/stock');
   }
 
   return (

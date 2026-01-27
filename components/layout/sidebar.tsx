@@ -18,55 +18,110 @@ interface SidebarProps {
   user: {
     role: string;
     tenant_id: string | null;
+    permissions?: Record<string, unknown> | null;
   };
   tenant: {
     name: string;
   } | null;
+  enabledModules?: string[];
 }
 
-export function Sidebar({ user, tenant }: SidebarProps) {
+export function Sidebar({ user, tenant, enabledModules = [] }: SidebarProps) {
   const pathname = usePathname();
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
 
-  const userNavItems = [
+  // Check user permissions
+  const userPermissions = (user.permissions as any) || { modules: {} };
+
+  const checkModuleAccess = (moduleCode: string) => {
+    // Module must be enabled for tenant
+    if (!enabledModules.includes(moduleCode)) {
+      return { enabled: false, hasRead: false, hasWrite: false };
+    }
+    
+    // Check user permissions
+    const modulePerms = userPermissions.modules?.[moduleCode];
+    if (!modulePerms) {
+      // Default: read access if module is enabled
+      return { enabled: true, hasRead: true, hasWrite: false };
+    }
+    
+    return {
+      enabled: true,
+      hasRead: modulePerms.read === true,
+      hasWrite: modulePerms.write === true,
+    };
+  };
+
+  const allUserNavItems = [
     {
       title: 'Accueil',
       href: '/dashboard',
       icon: LayoutDashboard,
+      moduleCode: null,
     },
     {
       title: 'Stock Health',
       href: '/stock',
       icon: Package,
-      badge: 'Actif',
+      moduleCode: 'stock',
     },
     {
       title: 'Demand Planning',
       href: '/demand-planning',
       icon: TrendingUp,
-      badge: 'Bientôt',
-      disabled: true,
+      moduleCode: 'demand-planning',
     },
     {
       title: 'Transport Control',
       href: '/transport',
       icon: Truck,
-      badge: 'Bientôt',
-      disabled: true,
+      moduleCode: 'transport',
     },
     {
       title: 'Supplier Risk',
       href: '/supplier-risk',
       icon: Shield,
-      badge: 'Bientôt',
-      disabled: true,
+      moduleCode: 'supplier-risk',
     },
     {
       title: 'Paramètres',
       href: '/settings',
       icon: Settings,
+      moduleCode: null,
     },
   ];
+
+  // Filter and configure nav items based on enabled modules and permissions
+  const userNavItems = allUserNavItems.map((item) => {
+    if (!item.moduleCode) {
+      return { ...item, badge: undefined, disabled: false };
+    }
+
+    const access = checkModuleAccess(item.moduleCode);
+    
+    if (!access.enabled) {
+      return {
+        ...item,
+        badge: 'Non activé',
+        disabled: true,
+      };
+    }
+
+    if (!access.hasRead) {
+      return {
+        ...item,
+        badge: 'Accès refusé',
+        disabled: true,
+      };
+    }
+
+    return {
+      ...item,
+      badge: access.hasWrite ? 'Actif' : 'Lecture seule',
+      disabled: false,
+    };
+  });
 
   const adminNavItems = [
     {
@@ -88,6 +143,19 @@ export function Sidebar({ user, tenant }: SidebarProps) {
 
   const navItems = isSuperAdmin ? adminNavItems : userNavItems;
 
+  // Helper function to check if a nav item is active
+  const isNavItemActive = (href: string, currentPath: string) => {
+    // For /admin, only match exactly or paths that start with /admin/ but not /admin/tenants or /admin/users
+    if (href === '/admin') {
+      return currentPath === '/admin' || 
+             (currentPath.startsWith('/admin/') && 
+              !currentPath.startsWith('/admin/tenants') && 
+              !currentPath.startsWith('/admin/users'));
+    }
+    // For other items, match exactly or if path starts with href + '/'
+    return currentPath === href || currentPath?.startsWith(href + '/');
+  };
+
   return (
     <aside className="w-64 border-r bg-slate-950">
       <div className="flex h-full flex-col">
@@ -106,7 +174,7 @@ export function Sidebar({ user, tenant }: SidebarProps) {
           <div className="flex-1 space-y-1">
             {navItems.filter(item => item.title !== 'Paramètres').map((item) => {
             const Icon = item.icon;
-            const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
+            const isActive = isNavItemActive(item.href, pathname || '');
             const isDisabled = item.disabled;
 
             return (
@@ -149,7 +217,7 @@ export function Sidebar({ user, tenant }: SidebarProps) {
           <div className="mt-auto pt-4 border-t border-slate-800">
             {navItems.filter(item => item.title === 'Paramètres').map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
+              const isActive = isNavItemActive(item.href, pathname || '');
               const isDisabled = item.disabled;
 
               return (

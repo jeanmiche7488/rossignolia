@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
 import { Package, TrendingUp, Truck, Shield, Plus, ArrowRight, AlertCircle, Clock, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
+import { getEnabledModulesForTenant, hasModulePermission } from '@/lib/utils/modules';
 
 export default async function DashboardPage() {
   const supabase = await createServerComponentClient();
@@ -97,18 +98,33 @@ export default async function DashboardPage() {
     });
   }
 
-  const modules = [
+  // Get enabled modules for this tenant
+  const enabledModules = await getEnabledModulesForTenant(profile.tenant_id);
+  
+  // Get user permissions
+  const userPermissions = (profile.permissions as any) || { modules: {} };
+
+  // Check access for each module
+  const checkModuleAccess = async (moduleCode: string) => {
+    const isEnabled = enabledModules.includes(moduleCode);
+    if (!isEnabled) {
+      return { enabled: false, hasRead: false, hasWrite: false };
+    }
+    
+    const hasRead = await hasModulePermission(user.id, moduleCode, 'read');
+    const hasWrite = await hasModulePermission(user.id, moduleCode, 'write');
+    
+    return { enabled: true, hasRead, hasWrite };
+  };
+
+  const allModules = [
     {
       id: 'stock',
       name: 'Stock Health',
       description: 'Audit dormant, rotation, couverture',
       icon: Package,
       href: '/stock',
-      status: 'active',
-      analysesCount: stockAnalysesCount || 0,
-      recommendationsCount: stockRecommendationsCount || 0,
-      revenueProtected: revenueProtected,
-      capitalReleased: capitalReleased,
+      moduleCode: 'stock',
     },
     {
       id: 'demand-planning',
@@ -116,7 +132,7 @@ export default async function DashboardPage() {
       description: 'Prévisions de ventes, saisonnalité',
       icon: TrendingUp,
       href: '/demand-planning',
-      status: 'coming-soon',
+      moduleCode: 'demand-planning',
     },
     {
       id: 'transport',
@@ -124,7 +140,7 @@ export default async function DashboardPage() {
       description: 'Analyse des coûts de fret, optimisation chargement',
       icon: Truck,
       href: '/transport',
-      status: 'coming-soon',
+      moduleCode: 'transport',
     },
     {
       id: 'supplier-risk',
@@ -132,9 +148,36 @@ export default async function DashboardPage() {
       description: 'Analyse fiabilité fournisseurs, délais',
       icon: Shield,
       href: '/supplier-risk',
-      status: 'coming-soon',
+      moduleCode: 'supplier-risk',
     },
   ];
+
+  // Check access for all modules
+  const modulesWithAccess = await Promise.all(
+    allModules.map(async (module) => {
+      const access = await checkModuleAccess(module.moduleCode);
+      
+      if (module.moduleCode === 'stock' && access.hasRead) {
+        return {
+          ...module,
+          status: 'active',
+          analysesCount: stockAnalysesCount || 0,
+          recommendationsCount: stockRecommendationsCount || 0,
+          revenueProtected: revenueProtected,
+          capitalReleased: capitalReleased,
+          disabled: !access.hasRead,
+        };
+      }
+      
+      return {
+        ...module,
+        status: access.enabled && access.hasRead ? 'active' : 'coming-soon',
+        disabled: !access.enabled || !access.hasRead,
+      };
+    })
+  );
+
+  const modules = modulesWithAccess;
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -201,8 +244,9 @@ export default async function DashboardPage() {
             {modules.map((module) => {
               const Icon = module.icon;
               const isActive = module.status === 'active';
+              const isDisabled = module.disabled;
 
-              return isActive ? (
+              return isActive && !isDisabled ? (
                 <Link
                   key={module.id}
                   href={module.href}
@@ -289,7 +333,7 @@ export default async function DashboardPage() {
                   key={module.id}
                   className={cn(
                     'flex flex-col gap-4 p-6 rounded-lg border transition-all',
-                    'border-slate-200 bg-slate-50/50 opacity-60 cursor-not-allowed'
+                    'border-slate-200 bg-slate-50/50 opacity-50 cursor-not-allowed grayscale'
                   )}
                 >
                   <div className="flex items-start justify-between">
@@ -299,10 +343,12 @@ export default async function DashboardPage() {
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-lg text-slate-900">{module.name}</h3>
-                          <Badge variant="secondary" className="text-xs">Bientôt</Badge>
+                          <h3 className="font-semibold text-lg text-slate-500">{module.name}</h3>
+                          <Badge variant="secondary" className="text-xs">
+                            {isDisabled ? 'Non activé' : 'Bientôt'}
+                          </Badge>
                         </div>
-                        <p className="text-xs text-slate-600 mt-0.5">{module.description}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">{module.description}</p>
                       </div>
                     </div>
                   </div>

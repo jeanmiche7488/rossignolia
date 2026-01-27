@@ -3,7 +3,6 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createBrowserClient } from '@/lib/db/supabase-client';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
@@ -15,7 +14,6 @@ export function NewTenantForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
-  const supabase = createBrowserClient();
 
   const handleSlugChange = (value: string) => {
     // Auto-generate slug from name
@@ -47,20 +45,24 @@ export function NewTenantForm() {
     setLoading(true);
 
     try {
-      const { data, error: insertError } = await supabase
-        .from('tenants')
-        .insert({
+      const response = await fetch('/api/admin/create-tenant', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           name: name.trim(),
           slug: slug.trim(),
-        })
-        .select()
-        .single();
+        }),
+      });
 
-      if (insertError) {
-        throw new Error(insertError.message);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Une erreur est survenue');
       }
 
-      router.push(`/admin/tenants/${data.id}`);
+      router.push(`/admin/tenants/${data.tenantId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Une erreur est survenue');
       setLoading(false);

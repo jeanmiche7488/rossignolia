@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select } from '@/components/ui/select';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
@@ -17,14 +17,25 @@ interface NewUserFormProps {
   }>;
 }
 
+// Generate a random password
+function generatePassword(): string {
+  const length = 12;
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+}
+
 export function NewUserForm({ tenants }: NewUserFormProps) {
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [tenantId, setTenantId] = useState('');
   const [role, setRole] = useState<'USER' | 'ADMIN'>('USER');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [generatedPassword, setGeneratedPassword] = useState<string | null>(null);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -36,17 +47,15 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
       return;
     }
 
-    if (!password.trim() || password.length < 6) {
-      setError('Le mot de passe doit contenir au moins 6 caractères');
-      return;
-    }
-
     if (!tenantId) {
       setError('Le tenant est requis');
       return;
     }
 
     setLoading(true);
+
+    // Generate password automatically
+    const password = generatePassword();
 
     try {
       // Create user in Supabase Auth
@@ -70,7 +79,13 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
         throw new Error(data.error || 'Une erreur est survenue');
       }
 
-      router.push(`/admin/users/${data.userId}`);
+      // Store generated password to show to admin
+      setGeneratedPassword(password);
+      
+      // Show success message with password
+      setTimeout(() => {
+        router.push(`/admin/users/${data.userId}`);
+      }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Une erreur est survenue');
       setLoading(false);
@@ -82,6 +97,32 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
       {error && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {generatedPassword && (
+        <div className="rounded-lg border border-green-500/50 bg-green-50 p-4 space-y-2">
+          <p className="text-sm font-medium text-green-900">Utilisateur créé avec succès !</p>
+          <div className="space-y-1">
+            <p className="text-xs text-green-700">Mot de passe généré :</p>
+            <div className="flex items-center gap-2">
+              <code className="px-3 py-1.5 bg-white border border-green-200 rounded text-sm font-mono text-green-900">
+                {generatedPassword}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(generatedPassword);
+                }}
+                className="text-xs"
+              >
+                Copier
+              </Button>
+            </div>
+            <p className="text-xs text-green-600 mt-2">⚠️ Notez ce mot de passe, il ne sera plus affiché.</p>
+          </div>
         </div>
       )}
 
@@ -98,22 +139,6 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
         />
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="password">Mot de passe *</Label>
-        <Input
-          id="password"
-          type="password"
-          placeholder="••••••••"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          disabled={loading}
-          minLength={6}
-        />
-        <p className="text-xs text-muted-foreground">
-          Minimum 6 caractères
-        </p>
-      </div>
 
       <div className="space-y-2">
         <Label htmlFor="fullName">Nom complet</Label>
@@ -128,30 +153,33 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
 
       <div className="space-y-2">
         <Label htmlFor="tenant">Tenant *</Label>
-        <Select value={tenantId} onValueChange={setTenantId} disabled={loading}>
-          <SelectTrigger>
-            <SelectValue placeholder="Sélectionnez un tenant" />
-          </SelectTrigger>
-          <SelectContent>
-            {tenants.map((tenant) => (
-              <SelectItem key={tenant.id} value={tenant.id}>
-                {tenant.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
+        <Select
+          id="tenant"
+          value={tenantId}
+          onChange={(e) => setTenantId(e.target.value)}
+          disabled={loading}
+          required
+        >
+          <option value="">Sélectionnez un tenant</option>
+          {tenants.map((tenant) => (
+            <option key={tenant.id} value={tenant.id}>
+              {tenant.name}
+            </option>
+          ))}
         </Select>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="role">Rôle *</Label>
-        <Select value={role} onValueChange={(value) => setRole(value as 'USER' | 'ADMIN')} disabled={loading}>
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="USER">Utilisateur</SelectItem>
-            <SelectItem value="ADMIN">Administrateur</SelectItem>
-          </SelectContent>
+        <Select
+          id="role"
+          value={role}
+          onChange={(e) => setRole(e.target.value as 'USER' | 'ADMIN')}
+          disabled={loading}
+          required
+        >
+          <option value="USER">Utilisateur</option>
+          <option value="ADMIN">Administrateur</option>
         </Select>
       </div>
 
@@ -167,7 +195,7 @@ export function NewUserForm({ tenants }: NewUserFormProps) {
             Annuler
           </Button>
         </Link>
-        <Button type="submit" disabled={loading || !email.trim() || !password.trim() || !tenantId} className="transition-all hover:scale-105 hover:shadow-md">
+        <Button type="submit" disabled={loading || !email.trim() || !tenantId || !!generatedPassword} className="transition-all hover:scale-105 hover:shadow-md">
           {loading ? 'Création...' : 'Créer l\'utilisateur'}
         </Button>
       </div>

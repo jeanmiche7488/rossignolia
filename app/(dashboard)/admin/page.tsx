@@ -4,9 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Users, Building2 } from 'lucide-react';
+import { Plus, Users, Building2, Mail, Calendar, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
-import { SignOutButton } from '@/components/auth/sign-out-button';
 
 export default async function AdminPage() {
   const supabase = await createServerComponentClient();
@@ -52,12 +51,52 @@ export default async function AdminPage() {
       if (result.data) {
         const counts: Record<string, number> = {};
         result.data.forEach((profile) => {
-          counts[profile.tenant_id] = (counts[profile.tenant_id] || 0) + 1;
+          if (profile.tenant_id) {
+            counts[profile.tenant_id] = (counts[profile.tenant_id] || 0) + 1;
+          }
         });
         return counts;
       }
       return {};
     });
+
+  // Get recent users with tenant info and last_sign_in_at
+  // Use service role client to access auth.users data
+  const { createClient } = await import('@supabase/supabase-js');
+  const supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    }
+  );
+
+  const { data: recentUsers } = await supabase
+    .from('profiles')
+    .select(`
+      *,
+      tenants:tenant_id (
+        id,
+        name,
+        slug
+      )
+    `)
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  // Get last_sign_in_at for each user from auth.users
+  const usersWithLastSignIn = await Promise.all(
+    (recentUsers || []).map(async (user) => {
+      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(user.id);
+      return {
+        ...user,
+        last_sign_in_at: authUser?.user?.last_sign_in_at || null,
+      };
+    })
+  );
 
   return (
     <div className="container mx-auto p-8 space-y-8">
@@ -69,7 +108,6 @@ export default async function AdminPage() {
             Gestion des tenants et utilisateurs
           </p>
         </div>
-        <div className="flex items-center gap-4">
         <div className="flex items-center gap-4">
           <Link href="/admin/tenants">
             <Button variant="outline" className="transition-all hover:scale-105">
@@ -83,8 +121,6 @@ export default async function AdminPage() {
               Gérer les utilisateurs
             </Button>
           </Link>
-        </div>
-          <SignOutButton />
         </div>
       </div>
 
@@ -135,47 +171,107 @@ export default async function AdminPage() {
         </Card>
       </div>
 
-      {/* Tenants List */}
+      {/* Recent Users */}
       <Card>
         <CardHeader>
-          <CardTitle>Liste des tenants</CardTitle>
-          <CardDescription>
-            Gérer les organisations et leurs utilisateurs
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Utilisateurs récents</CardTitle>
+              <CardDescription>
+                Derniers utilisateurs (par date de dernière connexion)
+              </CardDescription>
+            </div>
+            <Link href="/admin/users">
+              <Button variant="ghost" size="sm" className="transition-all hover:scale-105">
+                Voir tout
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            </Link>
+          </div>
         </CardHeader>
         <CardContent>
-          {tenants && tenants.length > 0 ? (
+          {usersWithLastSignIn && usersWithLastSignIn.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Nom</TableHead>
-                  <TableHead>Slug</TableHead>
-                  <TableHead>Utilisateurs</TableHead>
-                  <TableHead>Date de création</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Tenant</TableHead>
+                  <TableHead>Rôle</TableHead>
+                  <TableHead>Dernière connexion</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tenants.map((tenant) => (
-                  <TableRow key={tenant.id}>
-                    <TableCell className="font-medium">{tenant.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{tenant.slug}</Badge>
+                {usersWithLastSignIn
+                  .sort((a, b) => {
+                    // Sort by last_sign_in_at (most recent first), then by created_at
+                    const aDate = a.last_sign_in_at ? new Date(a.last_sign_in_at).getTime() : 0;
+                    const bDate = b.last_sign_in_at ? new Date(b.last_sign_in_at).getTime() : 0;
+                    if (bDate !== aDate) return bDate - aDate;
+                    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                  })
+                  .map((userProfile) => (
+                  <TableRow key={userProfile.id} className="hover:bg-slate-50 transition-colors">
+                    <TableCell className="font-medium">
+                      {userProfile.full_name || '-'}
                     </TableCell>
                     <TableCell>
-                      {usersPerTenant?.[tenant.id] || 0} utilisateur{usersPerTenant?.[tenant.id] !== 1 ? 's' : ''}
+                      <div className="flex items-center gap-2">
+                        <Mail className="h-4 w-4 text-slate-400" />
+                        <span>{userProfile.email}</span>
+                      </div>
                     </TableCell>
                     <TableCell>
-                      {new Date(tenant.created_at).toLocaleDateString('fr-FR', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
+                      {userProfile.tenant_id ? (
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-4 w-4 text-slate-400" />
+                          <span className="text-sm">
+                            {(userProfile.tenants as any)?.name || '-'}
+                          </span>
+                        </div>
+                      ) : (
+                        <Badge variant="outline" className="text-xs">Super Admin</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        className={
+                          userProfile.role === 'SUPER_ADMIN'
+                            ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                            : userProfile.role === 'ADMIN'
+                            ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                            : 'bg-slate-100 text-slate-700 border border-slate-200'
+                        }
+                      >
+                        {userProfile.role === 'SUPER_ADMIN'
+                          ? 'Super Admin'
+                          : userProfile.role === 'ADMIN'
+                          ? 'Admin'
+                          : 'Utilisateur'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-slate-400" />
+                        <span className="text-sm">
+                          {userProfile.last_sign_in_at
+                            ? new Date(userProfile.last_sign_in_at).toLocaleDateString('fr-FR', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                            : 'Jamais connecté'}
+                        </span>
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Link href={`/admin/tenants/${tenant.id}`}>
-                        <Button variant="ghost" size="sm">
+                      <Link href={`/admin/users/${userProfile.id}`}>
+                        <Button variant="ghost" size="sm" className="transition-all hover:scale-105">
                           Voir
+                          <ArrowRight className="ml-2 h-4 w-4" />
                         </Button>
                       </Link>
                     </TableCell>
@@ -185,13 +281,14 @@ export default async function AdminPage() {
             </Table>
           ) : (
             <div className="text-center py-12">
+              <Users className="h-12 w-12 mx-auto text-slate-400 mb-4" />
               <p className="text-muted-foreground mb-4">
-                Aucun tenant pour le moment
+                Aucun utilisateur pour le moment
               </p>
-              <Link href="/admin/tenants/new">
-                <Button>
+              <Link href="/admin/users/new">
+                <Button className="transition-all hover:scale-105 hover:shadow-md">
                   <Plus className="mr-2 h-4 w-4" />
-                  Créer le premier tenant
+                  Créer le premier utilisateur
                 </Button>
               </Link>
             </div>

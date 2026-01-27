@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Link from 'next/link';
 import { ArrowLeft, FileText, Calendar, User } from 'lucide-react';
+import { isModuleEnabledForTenant, hasModulePermission } from '@/lib/utils/modules';
 
 interface AnalysisDetailPageProps {
   params: {
@@ -31,6 +32,21 @@ export default async function AnalysisDetailPage({ params }: AnalysisDetailPageP
 
   if (!profile) {
     redirect('/login');
+  }
+
+  // Check if Stock Health module is enabled and user has read permission
+  if (!profile.tenant_id) {
+    redirect('/login');
+  }
+
+  const stockModuleEnabled = await isModuleEnabledForTenant(profile.tenant_id, 'stock');
+  if (!stockModuleEnabled) {
+    redirect('/dashboard');
+  }
+
+  const hasReadPermission = await hasModulePermission(user.id, 'stock', 'read');
+  if (!hasReadPermission) {
+    redirect('/dashboard');
   }
 
   // Get analysis

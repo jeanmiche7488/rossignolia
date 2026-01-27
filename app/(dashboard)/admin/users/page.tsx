@@ -6,8 +6,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
 import { Plus, User, ArrowRight, Building2 } from 'lucide-react';
+import { UserFilter } from './user-filter';
 
-export default async function UsersPage() {
+interface UsersPageProps {
+  searchParams: Promise<{ tenant?: string }>;
+}
+
+export default async function UsersPage({ searchParams }: UsersPageProps) {
   const supabase = await createServerComponentClient();
   const {
     data: { user },
@@ -27,8 +32,18 @@ export default async function UsersPage() {
     redirect('/dashboard');
   }
 
-  // Get all users with their tenant info
-  const { data: users } = await supabase
+  // Get all tenants for the filter
+  const { data: tenants } = await supabase
+    .from('tenants')
+    .select('id, name, slug')
+    .order('name', { ascending: true });
+
+  // Get filter from search params
+  const params = await searchParams;
+  const tenantFilter = params.tenant;
+
+  // Build query for users
+  let usersQuery = supabase
     .from('profiles')
     .select(`
       *,
@@ -37,8 +52,37 @@ export default async function UsersPage() {
         name,
         slug
       )
-    `)
-    .order('created_at', { ascending: false });
+    `);
+
+  // Apply tenant filter if specified
+  if (tenantFilter && tenantFilter !== 'all') {
+    usersQuery = usersQuery.eq('tenant_id', tenantFilter);
+  }
+
+  const { data: users } = await usersQuery.order('created_at', { ascending: false });
+
+  // Get last_sign_in_at for each user
+  const { createClient } = await import('@supabase/supabase-js');
+  const supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    }
+  );
+
+  const usersWithLastSignIn = await Promise.all(
+    (users || []).map(async (user) => {
+      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(user.id);
+      return {
+        ...user,
+        last_sign_in_at: authUser?.user?.last_sign_in_at || null,
+      };
+    })
+  );
 
   const getRoleBadge = (role: string) => {
     const variants: Record<string, string> = {
@@ -73,13 +117,20 @@ export default async function UsersPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Liste des utilisateurs</CardTitle>
-          <CardDescription>
-            {users?.length || 0} utilisateur{users && users.length > 1 ? 's' : ''} enregistré{users && users.length > 1 ? 's' : ''}
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Liste des utilisateurs</CardTitle>
+              <CardDescription>
+                {usersWithLastSignIn?.length || 0} utilisateur{usersWithLastSignIn && usersWithLastSignIn.length > 1 ? 's' : ''} enregistré{usersWithLastSignIn && usersWithLastSignIn.length > 1 ? 's' : ''}
+              </CardDescription>
+            </div>
+            {tenants && tenants.length > 0 && (
+              <UserFilter tenants={tenants} currentTenant={tenantFilter} />
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          {users && users.length > 0 ? (
+          {usersWithLastSignIn && usersWithLastSignIn.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -87,12 +138,20 @@ export default async function UsersPage() {
                   <TableHead>Email</TableHead>
                   <TableHead>Rôle</TableHead>
                   <TableHead>Tenant</TableHead>
-                  <TableHead>Date de création</TableHead>
+                  <TableHead>Dernière connexion</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {users.map((userProfile) => (
+                {usersWithLastSignIn
+                  .sort((a, b) => {
+                    // Sort by last_sign_in_at (most recent first), then by created_at
+                    const aDate = a.last_sign_in_at ? new Date(a.last_sign_in_at).getTime() : 0;
+                    const bDate = b.last_sign_in_at ? new Date(b.last_sign_in_at).getTime() : 0;
+                    if (bDate !== aDate) return bDate - aDate;
+                    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                  })
+                  .map((userProfile) => (
                   <TableRow key={userProfile.id} className="hover:bg-slate-50 transition-colors">
                     <TableCell className="font-medium">
                       {userProfile.full_name || '-'}
@@ -114,11 +173,15 @@ export default async function UsersPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {new Date(userProfile.created_at).toLocaleDateString('fr-FR', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
+                      {userProfile.last_sign_in_at
+                        ? new Date(userProfile.last_sign_in_at).toLocaleDateString('fr-FR', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'Jamais connecté'}
                     </TableCell>
                     <TableCell className="text-right">
                       <Link href={`/admin/users/${userProfile.id}`}>

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
+import { isModuleEnabledForTenant, hasModulePermission } from '@/lib/utils/modules';
 
 export default async function StockPage() {
   const supabase = await createServerComponentClient();
@@ -35,6 +36,21 @@ export default async function StockPage() {
   if (!profile.tenant_id) {
     redirect('/login');
   }
+
+  // Check if Stock Health module is enabled for this tenant
+  const stockModuleEnabled = await isModuleEnabledForTenant(profile.tenant_id, 'stock');
+  if (!stockModuleEnabled) {
+    redirect('/dashboard');
+  }
+
+  // Check if user has read permission for Stock Health
+  const hasReadPermission = await hasModulePermission(user.id, 'stock', 'read');
+  if (!hasReadPermission) {
+    redirect('/dashboard');
+  }
+
+  // Check if user has write permission (for creating new analyses)
+  const hasWritePermission = await hasModulePermission(user.id, 'stock', 'write');
 
   // Get analyses for this tenant
   const { data: analyses } = await supabase
@@ -74,12 +90,14 @@ export default async function StockPage() {
             Analysez et optimisez votre gestion de stock
           </p>
         </div>
-        <Link href="/stock/new">
-          <Button className="transition-all hover:scale-105 hover:shadow-md">
-            <Plus className="mr-2 h-4 w-4" />
-            Nouvelle analyse
-          </Button>
-        </Link>
+        {hasWritePermission && (
+          <Link href="/stock/new">
+            <Button className="transition-all hover:scale-105 hover:shadow-md">
+              <Plus className="mr-2 h-4 w-4" />
+              Nouvelle analyse
+            </Button>
+          </Link>
+        )}
       </div>
 
       {/* Dashboard Metrics */}

@@ -2,6 +2,7 @@ import { createServerComponentClient } from '@/lib/db/supabase-server';
 import { redirect } from 'next/navigation';
 import { Sidebar } from '@/components/layout/sidebar';
 import { SignOutButton } from '@/components/auth/sign-out-button';
+import { getEnabledModulesForTenant } from '@/lib/utils/modules';
 
 export default async function DashboardLayout({
   children,
@@ -29,6 +30,7 @@ export default async function DashboardLayout({
 
   // Get tenant info if not SUPER_ADMIN
   let tenant = null;
+  let enabledModules: string[] = [];
   if (profile.tenant_id) {
     const { data: tenantData } = await supabase
       .from('tenants')
@@ -36,11 +38,14 @@ export default async function DashboardLayout({
       .eq('id', profile.tenant_id)
       .single();
     tenant = tenantData;
+    
+    // Get enabled modules for this tenant
+    enabledModules = await getEnabledModulesForTenant(profile.tenant_id);
   }
 
   return (
     <div className="flex h-screen bg-background">
-      <Sidebar user={profile} tenant={tenant} />
+      <Sidebar user={profile} tenant={tenant} enabledModules={enabledModules} />
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="h-16 border-b border-slate-200 bg-white">
           <div className="flex h-full items-center justify-between px-6">

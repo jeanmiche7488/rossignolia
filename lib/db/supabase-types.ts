@@ -28,28 +28,31 @@ export type Database = {
       profiles: {
         Row: {
           id: string;
-          tenant_id: string;
+          tenant_id: string | null;
           email: string;
           full_name: string | null;
           role: string;
+          permissions: Record<string, unknown> | null;
           created_at: string;
           updated_at: string;
         };
         Insert: {
           id: string;
-          tenant_id: string;
+          tenant_id: string | null;
           email: string;
           full_name?: string | null;
           role?: string;
+          permissions?: Record<string, unknown> | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           id?: string;
-          tenant_id?: string;
+          tenant_id?: string | null;
           email?: string;
           full_name?: string | null;
           role?: string;
+          permissions?: Record<string, unknown> | null;
           created_at?: string;
           updated_at?: string;
         };
