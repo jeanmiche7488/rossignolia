@@ -110,6 +110,8 @@ export type Database = {
           product_name: string | null;
           quantity: number | null;
           unit_cost: number | null;
+          currency: string | null;
+          unit_cost_eur: number | null;
           total_value: number | null;
           location: string | null;
           category: string | null;
@@ -127,6 +129,8 @@ export type Database = {
           product_name?: string | null;
           quantity?: number | null;
           unit_cost?: number | null;
+          currency?: string | null;
+          unit_cost_eur?: number | null;
           total_value?: number | null;
           location?: string | null;
           category?: string | null;
@@ -144,6 +148,8 @@ export type Database = {
           product_name?: string | null;
           quantity?: number | null;
           unit_cost?: number | null;
+          currency?: string | null;
+          unit_cost_eur?: number | null;
           total_value?: number | null;
           location?: string | null;
           category?: string | null;

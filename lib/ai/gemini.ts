@@ -45,13 +45,22 @@ const ADVISOR_CONFIG = {
   temperature: 0.3,
   topK: 40,
   topP: 0.95,
-  maxOutputTokens: 8192,
+  // Les réponses "advisor" incluent souvent du python + plusieurs recommandations.
+  // Augmenté pour éviter les réponses tronquées (cause fréquente de JSON invalide).
+  maxOutputTokens: 32768,
 };
 
 /**
  * Types for prompt operations
  */
-export type PromptType = "mapping" | "cleaning" | "advisor";
+export type PromptType =
+  | "mapping"
+  | "cleaning"
+  // Legacy name kept for backward compatibility (recommendations directly from stock entries)
+  | "advisor"
+  // New split: python codegen + recommendations from facts
+  | "analysis_codegen"
+  | "analysis_reco";
 
 export interface MappingInput {
   columns: string[];
@@ -69,6 +78,21 @@ export interface CleaningInput {
 
 export interface AdvisorInput {
   stockEntries: Record<string, unknown>[];
+  analysisMetadata?: Record<string, unknown>;
+  tenantId?: string | null;
+  useDbPrompt?: boolean;
+}
+
+export interface AnalysisCodegenInput {
+  datasetProfile: Record<string, unknown>;
+  prompt: string;
+  tenantId?: string | null;
+  useDbPrompt?: boolean;
+}
+
+export interface AnalysisRecoFromFactsInput {
+  facts: Record<string, unknown>;
+  prompt: string;
   analysisMetadata?: Record<string, unknown>;
   tenantId?: string | null;
   useDbPrompt?: boolean;
@@ -115,6 +139,7 @@ Schéma cible (CHAMPS OBLIGATOIRES marqués d'un *):
 - product_name: Nom du produit (cherche: Product Name, Nom, Désignation, Description, Item, Article Name, etc.)
 - quantity*: Quantité en stock (OBLIGATOIRE - cherche: Quantity, Stock, Qté, Unidades, Amount, Qty, Stock Level, etc.)
 - unit_cost: Coût unitaire (cherche: Cost, Price, Prix, Coste, Unit Cost, Unit Price, etc.)
+- currency: Code devise ISO (EUR, USD, etc.) — important si unit_cost peut être en plusieurs devises (cherche: Currency, Devise, Currency Code, etc.)
 - total_value: Valeur totale (cherche: Total, Value, Valeur, Total Value, Montant, etc.)
 - location: Emplacement/Entrepôt (cherche: Location, Warehouse, Entrepôt, Depot, Almacen, etc.)
 - category: Catégorie (cherche: Category, Catégorie, Type, Categoria, etc.)
@@ -231,7 +256,8 @@ Règles de nettoyage:
 3. Nettoyer les chaînes (trim, normaliser les espaces)
 4. Valider les SKUs (format cohérent)
 5. Calculer les valeurs manquantes si possible (total_value = quantity * unit_cost)
-6. Préserver toutes les colonnes non mappées dans "attributes"
+6. Si des devises différentes sont détectées pour unit_cost: remplir "currency" (code ISO: EUR, USD, etc.). Si currency est mappé, l'utiliser; sinon inférer si possible. Remplir "unit_cost_eur": si currency = EUR alors unit_cost_eur = unit_cost; sinon laisser null ou convertir si taux connu.
+7. Préserver toutes les colonnes non mappées dans "attributes"
 
 Réponds UNIQUEMENT avec un JSON valide de cette structure:
 {
@@ -241,6 +267,8 @@ Réponds UNIQUEMENT avec un JSON valide de cette structure:
       "product_name": "...",
       "quantity": 123,
       "unit_cost": 45.67,
+      "currency": "EUR",
+      "unit_cost_eur": 45.67,
       "total_value": 5617.41,
       "attributes": {
         "colonne_non_mappee": "valeur"
@@ -259,6 +287,7 @@ Réponds UNIQUEMENT avec un JSON valide de cette structure:
 IMPORTANT:
 - Le JSON doit être valide et parsable
 - Toutes les colonnes originales non mappées doivent être dans "attributes"
+- Si currency est présent, remplir unit_cost_eur quand currency = EUR (unit_cost_eur = unit_cost)
 - Le pythonCode doit être du code Python valide et exécutable
 `;
 
@@ -408,73 +437,66 @@ export async function generateRecommendations(input: AdvisorInput): Promise<{
     promptTemplate = await getPromptFromDB(input.tenantId, 'stock', 'advisor');
   }
 
-  // Default prompt if not found in DB
-  const defaultPrompt = `
-Tu es un expert en analyse logistique et gestion de stock.
-Analyse les données de stock suivantes et génère des recommandations actionnables.
-
-Données de stock: {stockEntries}
-
-{analysisMetadata}
-
-Types de recommandations possibles:
-- dormant: Stock dormant (pas de mouvement depuis longtemps)
-- slow-moving: Rotation lente
-- overstock: Surstockage
-- understock: Sous-stockage
-- obsolete: Stock obsolète
-- high-value: Stock à haute valeur
-- low-rotation: Faible rotation
-
-Pour chaque recommandation, fournis:
-1. Un titre clair et actionnable
-2. Une description détaillée
-3. Des actions concrètes à entreprendre
-4. Les SKUs concernés
-5. L'impact financier estimé
-6. Le code Python qui justifie l'analyse (White Box)
-
-Réponds UNIQUEMENT avec un JSON valide de cette structure:
-{
-  "recommendations": [
-    {
-      "type": "dormant",
-      "priority": "high",
-      "title": "Titre de la recommandation",
-      "description": "Description détaillée",
-      "actionItems": [
-        {
-          "title": "Action 1",
-          "description": "Description de l'action",
-          "priority": "high"
-        }
-      ],
-      "affectedSkus": ["SKU1", "SKU2"],
-      "estimatedImpact": {
-        "financialImpact": 10000,
-        "currency": "EUR",
-        "potentialSavings": 5000,
-        "riskLevel": "medium",
-        "timeframe": "3 mois"
-      },
-      "pythonCode": "Code Python qui justifie la recommandation"
-    }
-  ]
-}
-
-IMPORTANT:
-- Le JSON doit être valide et parsable
-- Le pythonCode doit être du code Python valide et exécutable
-- Priorise les recommandations par impact (critical > high > medium > low)
-- Sois concret et actionnable
-`;
+  // Default prompt if not found in DB (array join to avoid template literal parsing issues)
+  const defaultPrompt = [
+    "Tu es un expert en analyse logistique et gestion de stock.",
+    "Analyse les données de stock suivantes et génère des recommandations actionnables.",
+    "",
+    "Données de stock: {stockEntries}",
+    "",
+    "{analysisMetadata}",
+    "",
+    "Types de recommandations possibles:",
+    "- dormant: Stock dormant (pas de mouvement depuis longtemps)",
+    "- slow-moving: Rotation lente",
+    "- overstock: Surstockage",
+    "- understock: Sous-stockage",
+    "- obsolete: Stock obsolète",
+    "- high-value: Stock à haute valeur",
+    "- low-rotation: Faible rotation",
+    "",
+    "Pour chaque recommandation, fournis:",
+    "1. Un titre clair et actionnable",
+    "2. Une description détaillée",
+    "3. Des actions concrètes à entreprendre",
+    "4. Les SKUs concernés",
+    "5. L'impact financier estimé",
+    "6. Le code Python qui justifie l'analyse (White Box)",
+    "",
+    "Réponds UNIQUEMENT avec un JSON valide de cette structure:",
+    "{",
+    '  "recommendations": [',
+    "    {",
+    '      "type": "dormant",',
+    '      "priority": "high",',
+    '      "title": "Titre de la recommandation",',
+    '      "description": "Description détaillée",',
+    '      "actionItems": [',
+    "        {",
+    '          "title": "Action 1",',
+    '          "description": "Description de l\'action",',
+    '          "priority": "high"',
+    "        }",
+    "      ],",
+    '      "affectedSkus": ["SKU1", "SKU2"],',
+    '      "estimatedImpact": {',
+    '        "financialImpact": 10000,',
+    '        "currency": "EUR",',
+    '        "potentialSavings": 5000,',
+    '        "riskLevel": "medium",',
+    '        "timeframe": "3 mois"',
+    "      },",
+    '      "pythonCode": "Code Python qui justifie la recommandation"',
+    "    }",
+    "  ]",
+    "}",
+  ].join("\n");
 
   const template = promptTemplate || defaultPrompt;
   const { replacePromptPlaceholders } = await import('./prompts');
-  
   const prompt = replacePromptPlaceholders(template, {
-    stockEntries: JSON.stringify(input.stockEntries.slice(0, 20), null, 2) + 
-                  (input.stockEntries.length > 20 ? `\n... (${input.stockEntries.length - 20} entrées supplémentaires)` : ""),
+    stockEntries: JSON.stringify(input.stockEntries.slice(0, 20), null, 2) +
+      (input.stockEntries.length > 20 ? `\n... (${input.stockEntries.length - 20} entrées supplémentaires)` : ""),
     analysisMetadata: input.analysisMetadata ? JSON.stringify(input.analysisMetadata, null, 2) : "",
   });
 
@@ -486,18 +508,240 @@ IMPORTANT:
     },
   });
 
-  const response = result.response;
-  const text = response.text();
-  
+  const text = result.response.text();
+  const tryParseAdvisor = (raw: string) => {
+    let s = raw.trim();
+    const jsonBlock = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonBlock) s = jsonBlock[1].trim();
+    const parsed = JSON.parse(s);
+    return { recommendations: parsed.recommendations || [] };
+  };
+
+  try {
+    return tryParseAdvisor(text);
+  } catch (error) {
+    try {
+      const trimmed = text.trim();
+      const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return tryParseAdvisor(jsonMatch[0]);
+    } catch {
+      // ignore
+    }
+    try {
+      const repairPrompt = `
+Tu es un validateur/réparateur JSON strict.
+Retourne UNIQUEMENT un JSON valide conforme au schéma "recommendations".
+Entrée à réparer:
+${text}
+`;
+      const repaired = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: repairPrompt }] }],
+        generationConfig: { ...DETERMINISTIC_CONFIG, responseMimeType: "application/json" },
+      });
+      return tryParseAdvisor(repaired.response.text());
+    } catch {
+      throw new Error(
+        `Failed to parse Gemini advisor response: ${error}. First 200 chars: ${text.substring(0, 200)}`
+      );
+    }
+  }
+}
+
+/**
+ * Analysis Codegen Prompt
+ * Generates a Python script that reads JSONL rows from stdin and prints a JSON facts object to stdout.
+ */
+export async function generateAnalysisPython(input: AnalysisCodegenInput): Promise<{
+  pythonCode: string;
+  notes: string;
+}> {
+  const model = getModel();
+
+  // Try to get prompt from DB, fallback to provided prompt
+  let promptTemplate: string | null = null;
+  if (input.useDbPrompt !== false && input.tenantId !== undefined) {
+    promptTemplate = await getPromptFromDB(input.tenantId, 'stock', 'analysis_codegen');
+  }
+
+  const defaultPrompt = [
+    "Tu es un expert data/analytics en logistique.",
+    "Tu dois produire un script Python robuste et efficace.",
+    "",
+    "CONTEXTE DATASET (profil, pas toutes les lignes):",
+    "{datasetProfile}",
+    "",
+    "CONTRAT D'ENTRÉE:",
+    "- Le script lit depuis STDIN un flux JSON Lines (JSONL), 1 ligne = 1 objet stock entry.",
+    "- Chaque objet ressemble à une ligne de la table stock_entries (sku, product_name, quantity, unit_cost, currency, unit_cost_eur, total_value, location, category, supplier, last_movement_date, days_since_last_movement, attributes, created_at).",
+    "",
+    "CONTRAT DE SORTIE (CRITIQUE):",
+    "- Le script doit écrire sur STDOUT UNIQUEMENT un JSON valide (pas de markdown, pas de logs).",
+    "- Ce JSON s'appelle \"facts\" et doit contenir AU MINIMUM:",
+    "  - rowCount",
+    "  - skuCount",
+    "  - totalQuantity",
+    "  - totalValue",
+    "  - nullRates (par champ)",
+    "  - segments (ex: dormant/overstock/understock) avec pour chaque segment: count + topSkus (max 50)",
+    "  - anomalies (liste de strings)",
+    "",
+    "RÈGLES:",
+    "  - Doit supporter des milliers / dizaines de milliers de lignes : traitement streaming (ne pas stocker toutes les lignes).",
+    "  - Doit être déterministe.",
+    "  - Échapper correctement les guillemets dans les chaînes JSON.",
+    "  - Toute erreur doit provoquer un exit non-zero et écrire l'erreur sur STDERR.",
+    "",
+    "OBJECTIF ANALYSE (prompt utilisateur):",
+    "{prompt}",
+    "",
+    "Réponds UNIQUEMENT avec un JSON valide de cette structure:",
+    "{",
+    '  "pythonCode": "....",',
+    "  \"notes\": \"courtes notes d'implémentation\"",
+    "}",
+  ].join("\n");
+
+  const template = promptTemplate || defaultPrompt;
+  const { replacePromptPlaceholders } = await import('./prompts');
+
+  const promptText = replacePromptPlaceholders(template, {
+    datasetProfile: JSON.stringify(input.datasetProfile, null, 2),
+    prompt: input.prompt,
+  });
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: promptText }] }],
+    generationConfig: {
+      ...DETERMINISTIC_CONFIG,
+      responseMimeType: "application/json",
+    },
+  });
+
+  const text = result.response.text();
   try {
     const parsed = JSON.parse(text);
     return {
-      recommendations: parsed.recommendations || [],
+      pythonCode: parsed.pythonCode || "",
+      notes: parsed.notes || "",
     };
-  } catch (error) {
-    throw new Error(`Failed to parse Gemini advisor response: ${error}`);
+  } catch (e) {
+    throw new Error(`Failed to parse Gemini analysis codegen response: ${e}. First 200 chars: ${text.substring(0, 200)}`);
   }
 }
+
+/**
+ * Analysis Reco Prompt
+ * Generates recommendations from a JSON "facts" object (output of the python execution).
+ */
+export async function generateRecommendationsFromFacts(input: AnalysisRecoFromFactsInput): Promise<{
+  recommendations: Array<{
+    type: string;
+    priority: "low" | "medium" | "high" | "critical";
+    title: string;
+    description: string;
+    actionItems: Array<{
+      title: string;
+      description?: string;
+      priority?: "low" | "medium" | "high";
+    }>;
+    affectedSkus: string[];
+    estimatedImpact: {
+      financialImpact?: number;
+      currency?: string;
+      potentialSavings?: number;
+      riskLevel?: "low" | "medium" | "high";
+      timeframe?: string;
+    };
+    pythonCode: string;
+  }>;
+}> {
+  const model = getModel();
+
+  // Try to get prompt from DB, fallback to provided prompt
+  let promptTemplate: string | null = null;
+  if (input.useDbPrompt !== false && input.tenantId !== undefined) {
+    promptTemplate = await getPromptFromDB(input.tenantId, 'stock', 'analysis_reco');
+  }
+
+  const defaultPrompt = `
+Tu es un expert en analyse logistique et gestion de stock.
+Tu ne dois PAS recalculer à partir des lignes brutes. Tu dois uniquement te baser sur les FACTS JSON ci-dessous (sortie d'un script Python exécuté).
+
+FACTS:
+{facts}
+
+{analysisMetadata}
+
+OBJECTIF (prompt utilisateur):
+{prompt}
+
+Réponds UNIQUEMENT avec un JSON valide de cette structure:
+{
+  "recommendations": [
+    {
+      "type": "dormant|slow-moving|overstock|understock|obsolete|high-value|low-rotation|other",
+      "priority": "low|medium|high|critical",
+      "title": "Titre",
+      "description": "Description",
+      "actionItems": [{"title":"string","description":"string","priority":"low|medium|high"}],
+      "affectedSkus": ["string"],
+      "estimatedImpact": {"financialImpact": number, "currency": "string", "potentialSavings": number, "riskLevel": "low|medium|high", "timeframe":"string"},
+      "pythonCode": "Rappelle le python (ou un extrait) qui justifie les facts utilisés"
+    }
+  ]
+}
+`;
+
+  const template = promptTemplate || defaultPrompt;
+  const { replacePromptPlaceholders } = await import('./prompts');
+
+  const promptText = replacePromptPlaceholders(template, {
+    facts: JSON.stringify(input.facts, null, 2),
+    analysisMetadata: input.analysisMetadata ? JSON.stringify(input.analysisMetadata, null, 2) : "",
+    prompt: input.prompt,
+  });
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: promptText }] }],
+    generationConfig: {
+      ...ADVISOR_CONFIG,
+      responseMimeType: "application/json",
+    },
+  });
+
+  const text = result.response.text();
+
+  // Reuse the robust advisor parsing strategy
+  const tryParse = (raw: string) => {
+    let s = raw.trim();
+    const jsonBlock = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonBlock) s = jsonBlock[1].trim();
+    const parsed = JSON.parse(s);
+    return {
+      recommendations: parsed.recommendations || [],
+    };
+  };
+
+  try {
+    return tryParse(text);
+  } catch (error) {
+    // Attempt a deterministic repair pass
+    const repairPrompt = `
+Tu es un validateur/réparateur JSON strict.
+Retourne UNIQUEMENT un JSON valide conforme au schéma "recommendations".
+
+Entrée à réparer:
+${text}
+`;
+    const repaired = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: repairPrompt }] }],
+      generationConfig: { ...DETERMINISTIC_CONFIG, responseMimeType: "application/json" },
+    });
+    const repairedText = repaired.response.text();
+    return tryParse(repairedText);
+  }
+}
+
 
 /**
  * Helper to get prompt from database

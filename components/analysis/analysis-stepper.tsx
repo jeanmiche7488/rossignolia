@@ -38,7 +38,9 @@ export function AnalysisStepper({ analysisId, currentStep, steps, onClose }: Ana
       return <CheckCircle2 className="h-5 w-5 text-green-600" />;
     }
     if (step.status === 'in_progress') {
-      return <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />;
+      // Show a static icon to indicate the current active step
+      // without suggesting that a background process is running.
+      return <Loader2 className="h-5 w-5 text-blue-600" />;
     }
     if (step.status === 'failed') {
       return <X className="h-5 w-5 text-red-600" />;

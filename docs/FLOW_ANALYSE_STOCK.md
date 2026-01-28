@@ -1,202 +1,173 @@
-# Flow d'analyse Stock Health - Documentation complète
+# Flow d'analyse Stock Health — Documentation complète
 
 ## Vue d'ensemble
 
 Le flow d'analyse Stock Health suit ces étapes :
-1. **Upload multi-fichiers** → Agrégation des données
-2. **Mapping automatique** (Gemini) → Si confiance < 0.8, demande confirmation utilisateur
-3. **Validation utilisateur** → Confirmation/modification du mapping
-4. **Génération stock_entries** → Données nettoyées et normalisées
-5. **Nettoyage** (Gemini) → Normalisation des données
-6. **Analyse/Recommandations** (Gemini) → Génération des recommandations
 
-## Architecture des données
+1. **Upload multi-fichiers** → Enregistrement des fichiers et métadonnées
+2. **Démarrage** → Lancement du mapping (API map)
+3. **Mapping automatique** (Gemini) → Proposition de mapping ; **toujours** en attente de confirmation utilisateur
+4. **Confirmation mapping** (page `/stock/[id]/mapping`) → Modification possible, puis validation
+5. **Cleaning** (page `/stock/[id]/cleaning` → clic « Lancer ») → Nettoyage Gemini + insertion dans `stock_entries`
+6. **Analyse** (page `/stock/[id]/analysis`) → Génération du script Python (codegen) → Exécution → Génération des recommandations à partir des **facts** (reco depuis facts)
+7. **Recommandations** → Stockées dans `recommendations` ; statut analyse → `completed`
 
-### Table `analysis_files`
-Stocke les métadonnées de chaque fichier uploadé :
-- `id`, `analysis_id`, `tenant_id`
-- `file_name`, `file_type`, `file_path` (dans Supabase Storage)
-- `source_type`, `description` (saisis par l'utilisateur)
-- `original_columns` (JSONB), `row_count`
+Aucun enchaînement automatique cleaning → recommend : l’utilisateur va à l’étape Analyse, édite éventuellement le prompt, génère le Python, exécute, puis génère les recommandations.
 
-### Table `analyses`
-Stocke l'analyse globale :
-- `original_columns` : toutes les colonnes trouvées (agrégées)
-- `mapped_columns` : mapping proposé par Gemini (puis confirmé par l'utilisateur)
-- `status` : `pending` → `mapping_pending` → `processing` → `completed`
-- `metadata.files` : liste des fichiers avec leurs métadonnées
-- `metadata.mapping.confidence` : niveau de confiance du mapping (0-1)
-- `metadata.mapping.requires_confirmation` : booléen
+---
 
-### Table `stock_entries`
-Données nettoyées et normalisées après validation du mapping :
-- Champs mappés : `sku`, `product_name`, `quantity`, `unit_cost`, etc.
-- `attributes` (JSONB) : colonnes non mappées préservées
+## Statuts de l’analyse (`analyses.status`)
 
-### Table `recommendations`
-Recommandations générées par Gemini après analyse des `stock_entries`
+| Statut | Signification |
+|--------|----------------|
+| `pending` | Analyse créée, pas encore de démarrage |
+| `mapping_in_progress` | Mapping Gemini en cours (redirection vers `/stock/[id]/mapping/loading`) |
+| `mapping_pending` | Mapping proposé, en attente de confirmation utilisateur sur `/stock/[id]/mapping` |
+| `ready_for_cleaning` | Mapping confirmé ; l’utilisateur peut lancer le cleaning depuis `/stock/[id]/cleaning` |
+| `ready_for_analysis` | Cleaning terminé, `stock_entries` remplie ; l’utilisateur peut aller sur `/stock/[id]/analysis` |
+| `completed` | Analyse terminée (recommandations générées) |
+| `failed` | Erreur à une étape |
 
-## Flow détaillé
+---
 
-### 1. Upload (`/api/upload`)
+## Objets et tables utilisés par phase
 
-**Input** : Fichier CSV/Excel + `analysisId` + `sourceType` + `description`
+### Phase 1 — Création et upload
 
-**Actions** :
-- Upload vers Supabase Storage : `analysis-files/{tenant_id}/{analysis_id}/{filename}`
-- Parse header CSV pour extraire `original_columns`
-- Insert dans `analysis_files` avec toutes les métadonnées
+**Tables / objets :**
+- **`analyses`** : une ligne par analyse (`id`, `tenant_id`, `name`, `status` = `pending`, `metadata` = {})
+- **`analysis_files`** : une ligne par fichier uploadé (`analysis_id`, `file_name`, `file_path`, `source_type`, `original_columns`, `row_count`, etc.)
+- **Supabase Storage** : bucket `analysis-files`, chemin `{tenant_id}/{analysis_id}/{filename}`
 
-**Output** : `fileId` de l'enregistrement créé
+**API :**
+- `POST /api/upload` : body `analysisId`, `sourceType`, `description` + fichier ; upload Storage + insert `analysis_files`.
 
-### 2. Démarrage (`/api/analyze/start`)
+---
 
-**Input** : `analysisId`
+### Phase 2 — Démarrage et mapping (API)
 
-**Actions** :
-- Vérifie que l'analyse existe
-- Déclenche `/api/analyze/map` de manière asynchrone (via `fetch`)
+**Entrée :** `POST /api/analyze/start` avec `analysisId`.
 
-**Output** : `{ success: true, requiresMappingConfirmation: true }`
+**Objet en entrée :**
+- `analyses` (ligne de l’analyse)
+- `analysis_files` (tous les fichiers de l’analyse)
 
-### 3. Mapping (`/api/analyze/map`)
+**Traitement :**
+1. Mise à jour `analyses.status` = `mapping_in_progress`.
+2. Appel interne à `POST /api/analyze/map` (body `analysisId`).
 
-**Input** : `analysisId` (appel interne depuis `/api/analyze/start`)
+**API map — Objets utilisés :**
+- Lecture : `analyses`, `analysis_files`, fichiers binaires depuis Storage.
+- Agrégation en mémoire : `allRawData` (lignes avec `_source_file`, `_source_type`), `allColumns`, `columnSources` (colonne → liste de noms de fichiers), `fileMetadata` (file_name, source_type, row_count).
+- Appel Gemini : `mapColumns({ columns, sampleData, context }, { tenantId, useDbPrompt })` ; prompt type `mapping` depuis `system_prompts`.
+- Écriture : `analyses.original_columns`, `analyses.mapped_columns` (mapping proposé), `analyses.status` = `mapping_pending`, `analyses.metadata.mapping` (confidence, reasoning, proposed_mapping, column_sources), `analyses.metadata.files` = fileMetadata.
 
-**Actions** :
-1. Récupère **tous** les fichiers depuis `analysis_files` pour cet `analysisId`
-2. Pour chaque fichier :
-   - Télécharge depuis Storage
-   - Parse (CSV ou Excel avec `xlsx`)
-   - Agrège dans `allRawData` avec métadonnées `_source_file` et `_source_type`
-3. Combine toutes les colonnes uniques dans `allColumns`
-4. Appelle Gemini `mapColumns()` avec :
-   - Colonnes agrégées
-   - Échantillon de données (5 premières lignes)
-   - Contexte sur les fichiers sources
-   - Prompt depuis `system_prompts` (type: 'mapping')
-5. Détermine si confirmation nécessaire (`confidence < 0.8`)
-6. Met à jour `analyses` :
-   - `original_columns` : toutes les colonnes trouvées
-   - `mapped_columns` : mapping proposé
-   - `status` : `mapping_pending` si besoin de confirmation, sinon `processing`
-   - `metadata.mapping` : confidence, reasoning, proposed_mapping
-7. Si confiance élevée (≥ 0.8) : déclenche automatiquement `/api/analyze/clean`
-8. Si confiance faible (< 0.8) : attend confirmation utilisateur
+**Sortie :** L’utilisateur est redirigé vers `/stock/[id]/mapping` (ou reste sur loading si encore `mapping_in_progress`).
 
-**Output** : `{ success: true, requiresConfirmation: boolean }`
+---
 
-### 4. Confirmation utilisateur (`/stock/[id]/mapping`)
+### Phase 3 — Confirmation du mapping (page)
 
-**Page client** qui :
-- Charge l'analyse avec `mapped_columns` proposé
-- Affiche toutes les colonnes sources avec dropdown pour mapper vers champs cibles
-- Valide que les champs requis (SKU, quantity) sont mappés
-- Permet modification du mapping proposé
-- Au clic sur "Confirmer" :
-  - Met à jour `analyses.mapped_columns` avec le mapping confirmé
-  - Met `status` à `processing`
-  - Déclenche `/api/analyze/clean`
+**Page :** `/stock/[id]/mapping` (statut attendu : `mapping_pending`).
 
-### 5. Nettoyage (`/api/analyze/clean`)
+**Objets chargés :**
+- `analyses` : `original_columns`, `mapped_columns`, `metadata.mapping.column_sources`, `metadata.files`.
+- État local : `mapping` (proposition), `initialMapping` (copie au chargement), `columnSources`, `files` (liste des fichiers).
 
-**Input** : `analysisId` (appel interne depuis `/api/analyze/map` ou depuis page mapping)
+**Comportement :**
+- Un bloc par champ cible (SKU, Quantity, Unit Cost, **Currency**, Total Value, Location, etc.).
+- Dans chaque bloc : **une ligne par fichier** avec un **dropdown** pour choisir la colonne source (ou « No data »). Modification directe dans cette vue (pas de liste séparée « Mapped columns »).
+- Si une colonne était mappée au champ A et est réaffectée au champ B : bloc A = ligne en **rouge** + texte « « colonne » désaffecté (mapping modifié) » ; bloc B = ligne en **vert** + « « colonne » réaffecté ici ».
+- Champs requis (SKU, Quantity) : doivent être mappés ou marqués « Non disponible ».
+- Au clic « Confirmer » : mise à jour `analyses.mapped_columns` (mapping confirmé), `analyses.status` = `ready_for_cleaning`, `metadata.mapping.confirmed_mapping`, `confirmed_at`, `not_available_fields` ; redirection vers `/stock/[id]/cleaning`.
 
-**Actions** :
-1. Récupère `mapped_columns` depuis `analyses`
-2. Récupère **tous** les fichiers depuis `analysis_files`
-3. Agrège à nouveau tous les fichiers (même logique que mapping)
-4. Appelle Gemini `cleanData()` avec :
-   - Données agrégées
-   - `mapped_columns` confirmés
-   - Prompt depuis `system_prompts` (type: 'cleaning')
-5. Insère les données nettoyées dans `stock_entries` (par batch de 1000)
-6. Met à jour `analyses.metadata.cleaning` avec le rapport
-7. Déclenche `/api/analyze/recommend`
+---
 
-**Output** : `{ success: true }`
+### Phase 4 — Cleaning
 
-### 6. Recommandations (`/api/analyze/recommend`)
+**Page :** `/stock/[id]/cleaning` (statut `ready_for_cleaning`). Résumé des actions de cleaning (après exécution) ; bouton « Lancer le cleaning » appelle `POST /api/analyze/clean`.
 
-**Input** : `analysisId` (appel interne depuis `/api/analyze/clean`)
+**API clean — Objets utilisés :**
+- Lecture : `analyses` (mapped_columns), `analysis_files`, fichiers depuis Storage.
+- Agrégation : même logique que map (allRawData, colonnes, etc.).
+- Appel Gemini : `cleanData({ data, mappedColumns, issues, tenantId, useDbPrompt })` ; prompt type `cleaning`. Réponse : `cleanedData` (tableau d’objets avec champs mappés + `currency`, `unit_cost_eur` + `attributes`), `cleaningReport`, `pythonCode`.
+- Écriture : **`stock_entries`** (insert par batch) : `tenant_id`, `analysis_id`, `sku`, `product_name`, `quantity`, `unit_cost`, **`currency`**, **`unit_cost_eur`**, `total_value`, `location`, `category`, `supplier`, `last_movement_date`, `days_since_last_movement`, `attributes`.
+- Mise à jour : `analyses.metadata.cleaning` (report, pythonCode), `analyses.status` = `ready_for_analysis`.
 
-**Actions** :
-1. Récupère toutes les `stock_entries` pour cette analyse
-2. Appelle Gemini `generateRecommendations()` avec :
-   - Toutes les entrées de stock
-   - Métadonnées de l'analyse
-   - Prompt depuis `system_prompts` (type: 'advisor')
-3. Insère les recommandations dans `recommendations`
-4. Met `analyses.status` à `completed`
+**Pas d’appel automatique à recommend** : l’utilisateur va manuellement à l’étape Analyse.
 
-**Output** : `{ success: true }`
+---
 
-## Points importants
+### Phase 5 — Analyse (codegen + exécution + reco)
 
-### Agrégation multi-fichiers
-- Tous les fichiers sont téléchargés et parsés
-- Les données sont agrégées dans un seul tableau `allRawData`
-- Chaque ligne garde `_source_file` et `_source_type` pour traçabilité
-- Les colonnes sont combinées (union de toutes les colonnes uniques)
+**Page :** `/stock/[id]/analysis` (statut `ready_for_analysis`).
 
-### Mapping avec Gemini
-- Utilise le prompt depuis `system_prompts` (tenant-specific ou global)
-- Placeholders remplacés : `{columns}`, `{sampleData}`, `{context}`
-- Retourne `confidence` (0-1) pour décider si confirmation nécessaire
-- Si `confidence < 0.8` : toujours demander confirmation utilisateur
+**Sous-étapes :**
+1. **Codegen** : `POST /api/analyze/codegen` avec `analysisId`. Lit un profil du dataset (stock_entries), appelle Gemini `generateAnalysisPython` (prompt `analysis_codegen`). Réponse : `pythonCode`, `notes`. Sauvegarde optionnelle dans `analyses.metadata` ou config.
+2. **Exécution** : `POST /api/analyze/execute` avec `analysisId`. Lit `stock_entries` en flux (pagination), exécute le script Python (stdin = JSONL), récupère le JSON **facts** sur stdout, stocke dans `analyses.metadata.facts_json` (ou champ dédié).
+3. **Recommandations depuis facts** : `POST /api/analyze/recommend` avec `analysisId`. Utilise `generateRecommendationsFromFacts` (prompt `analysis_reco`) avec `facts` + metadata + prompt utilisateur. Insère dans `recommendations`, met `analyses.status` = `completed`.
 
-### Validation utilisateur
-- L'utilisateur peut modifier le mapping proposé
-- Validation que les champs requis sont mappés (SKU, quantity)
-- Une fois confirmé, le mapping est définitif et utilisé pour le nettoyage
+**Objets utilisés :**
+- **Codegen** : `stock_entries` (profil / échantillon), `system_prompts` (type `analysis_codegen`).
+- **Execute** : `stock_entries` (lecture paginée), script Python, sortie → `facts` (JSON).
+- **Recommend** : `analyses.metadata.facts_json` (ou équivalent), `system_prompts` (type `analysis_reco`), table `recommendations` (insert).
 
-### Génération stock_entries
-- Se fait **après** validation du mapping
-- Utilise les `mapped_columns` confirmés
-- Les colonnes non mappées sont préservées dans `attributes` (JSONB)
+**Prompts :**
+- `analysis_codegen` : génération du script Python (entrée JSONL, sortie JSON « facts »).
+- `analysis_reco` : génération des recommandations à partir du JSON facts (pas à partir des lignes brutes).
+- `advisor` (legacy) : désactivé en base ; plus utilisé pour le flow principal.
 
-### Prompts système
-- Stockés dans `system_prompts`
-- Priorité : tenant-specific > global (tenant_id = NULL)
-- Éditables via `/admin/prompts`
-- Versioning automatique lors de modification
+---
+
+## Tables et champs clés
+
+### `analysis_files`
+- `id`, `analysis_id`, `tenant_id`, `file_name`, `file_type`, `file_path`, `source_type`, `description`, `original_columns` (JSONB), `row_count`, `uploaded_at`.
+
+### `analyses`
+- `id`, `tenant_id`, `name`, `status` (voir statuts ci-dessus).
+- `original_columns` (JSONB) : liste des colonnes agrégées.
+- `mapped_columns` (JSONB) : mapping colonne source → champ cible (ex. `{ "Col1": "sku", "Col2": "quantity" }`).
+- `metadata` (JSONB) : `files` (liste { file_name, source_type, row_count }), `mapping` (confidence, reasoning, column_sources, confirmed_mapping, confirmed_at, not_available_fields), `cleaning` (report, pythonCode), `facts_json` (output du script Python), etc.
+
+### `stock_entries`
+- Champs mappés : `sku`, `product_name`, `quantity`, `unit_cost`, **`currency`**, **`unit_cost_eur`**, `total_value`, `location`, `category`, `supplier`, `last_movement_date`, `days_since_last_movement`.
+- `attributes` (JSONB) : colonnes non mappées.
+- `tenant_id`, `analysis_id`, `created_at`.
+
+### `recommendations`
+- `analysis_id`, `tenant_id`, `type`, `priority`, `title`, `description`, `action_items`, `affected_skus`, `estimated_impact`, `python_code`, `status`, etc.
+
+### `system_prompts`
+- `tenant_id` (NULL = global), `module_code` = 'stock', `prompt_type` : `mapping`, `cleaning`, `analysis_codegen`, `analysis_reco` ; `advisor` (désactivé).
+- Utilisés par : `mapColumns`, `cleanData`, `generateAnalysisPython`, `generateRecommendationsFromFacts`.
+
+---
+
+## Récap séquence des appels
+
+1. **Client** : création analyse → upload un ou plusieurs fichiers (`/api/upload`).
+2. **Client** : clic « Démarrer / Lancer le mapping » → `POST /api/analyze/start` → en interne `POST /api/analyze/map`.
+3. **Map** : lit fichiers, agrège, appelle Gemini mapping, écrit `analyses` (mapping_pending, mapped_columns, metadata.mapping, metadata.files).
+4. **Client** : page Mapping → affiche une ligne par fichier par champ, dropdown pour modifier → Confirmer → PATCH analyses (mapped_columns, status ready_for_cleaning) → redirection cleaning.
+5. **Client** : page Cleaning → clic « Lancer le cleaning » → `POST /api/analyze/clean` → Gemini cleanData, insert stock_entries (dont currency, unit_cost_eur), status ready_for_analysis.
+6. **Client** : page Analyse → (optionnel) éditer prompt → Codegen → Execute → Recommend → status completed.
+
+---
 
 ## Problèmes courants
 
-### Table `analysis_files` manquante
-**Symptôme** : `Could not find the table 'public.analysis_files'`
+- **Table `analysis_files` manquante** : exécuter la migration `011_add_analysis_files.sql`.
+- **Colonnes `currency` / `unit_cost_eur` manquantes** : exécuter `014_add_currency_unit_cost_eur.sql`.
+- **Erreur 401 sur appels internes** : les routes utilisent le header `X-Internal-Call: true` quand appelées depuis le serveur.
+- **Package xlsx** : `npm install xlsx` (voir `docs/INSTALL_XLSX.md`).
+- **Prompts manquants** : vérifier que les seeds créent bien `mapping`, `cleaning`, `analysis_codegen`, `analysis_reco` ; `advisor` peut être désactivé (`013_deactivate_advisor_prompt.sql`).
 
-**Solution** : Exécuter la migration `011_add_analysis_files.sql` dans Supabase SQL Editor
-
-### Erreur 401 sur `/api/analyze/map`
-**Symptôme** : `Non authentifié` lors de l'appel interne
-
-**Solution** : Les routes acceptent maintenant les appels internes via header `X-Internal-Call: true`
-
-### Package `xlsx` manquant
-**Symptôme** : `Module not found: Can't resolve 'xlsx'`
-
-**Solution** : `npm install xlsx` (voir `docs/INSTALL_XLSX.md`)
+---
 
 ## Vérification du flow
 
-Pour vérifier que tout fonctionne :
-
-1. **Vérifier la table** :
-   ```sql
-   SELECT COUNT(*) FROM analysis_files;
-   ```
-
-2. **Vérifier les prompts** :
-   ```sql
-   SELECT prompt_type, COUNT(*) FROM system_prompts WHERE is_active = true GROUP BY prompt_type;
-   ```
-   Devrait retourner : mapping, cleaning, advisor
-
-3. **Tester le flow complet** :
-   - Upload 2-3 fichiers CSV
-   - Vérifier qu'ils apparaissent dans `analysis_files`
-   - Vérifier que le mapping est proposé
-   - Confirmer le mapping
-   - Vérifier que `stock_entries` est généré
-   - Vérifier que `recommendations` est généré
+1. Vérifier les tables : `analysis_files`, `analyses`, `stock_entries`, `recommendations`.
+2. Vérifier les prompts actifs :  
+   `SELECT prompt_type, COUNT(*) FROM system_prompts WHERE is_active = true AND module_code = 'stock' GROUP BY prompt_type;`
+3. Tester : Upload → Mapping (vue par fichier, désaffectation/réaffectation) → Confirmer → Cleaning → Analyse (codegen → execute → reco) → statut `completed`.

@@ -62,6 +62,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Mapping non effectué' }, { status: 400 });
     }
 
+    // Mark cleaning in progress
+    await supabaseAdmin
+      .from('analyses')
+      .update({ status: 'cleaning_in_progress' })
+      .eq('id', analysisId);
+
     console.log('[Clean] Début du nettoyage pour l\'analyse:', analysisId);
     
     // Get all files for this analysis and aggregate them (same logic as mapping phase)
@@ -169,6 +175,8 @@ export async function POST(request: Request) {
         product_name: entry.product_name || null,
         quantity: entry.quantity ? Number(entry.quantity) : null,
         unit_cost: entry.unit_cost ? Number(entry.unit_cost) : null,
+        currency: entry.currency ?? null,
+        unit_cost_eur: entry.unit_cost_eur != null ? Number(entry.unit_cost_eur) : null,
         total_value: entry.total_value ? Number(entry.total_value) : null,
         location: entry.location || null,
         category: entry.category || null,
@@ -202,30 +210,24 @@ export async function POST(request: Request) {
     console.log('[Clean] Toutes les entrées ont été insérées avec succès');
 
     // Update analysis with cleaning report
+    // Safely handle metadata - it might be null or undefined
+    const currentMetadata = (analysis.metadata && typeof analysis.metadata === 'object' && !Array.isArray(analysis.metadata))
+      ? analysis.metadata
+      : {};
+    
     await supabaseAdmin
       .from('analyses')
       .update({
         metadata: {
-          ...metadata,
+          ...currentMetadata,
           cleaning: {
             report: cleaningResult.cleaningReport,
             pythonCode: cleaningResult.pythonCode,
           },
         },
+        status: 'ready_for_analysis',
       })
       .eq('id', analysisId);
-
-    // Trigger recommendations phase (internal call)
-    fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/analyze/recommend`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Internal-Call': 'true',
-      },
-      body: JSON.stringify({ analysisId }),
-    }).catch((err) => {
-      console.error('Failed to trigger recommendations phase:', err);
-    });
 
     return NextResponse.json({
       success: true,

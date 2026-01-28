@@ -8,7 +8,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Save, AlertCircle } from 'lucide-react';
+import { Loader2, Save, AlertCircle, Info } from 'lucide-react';
+import {
+  getPromptTypeLabel,
+  getPromptTypeDescription,
+  getPromptTypeVariables,
+} from '@/lib/utils/prompt-types';
 
 interface PromptEditorProps {
   prompt: any;
@@ -53,14 +58,9 @@ export function PromptEditor({ prompt }: PromptEditorProps) {
     }
   };
 
-  const getPromptTypeLabel = (type: string) => {
-    const labels: Record<string, string> = {
-      mapping: 'Mapping',
-      cleaning: 'Nettoyage',
-      advisor: 'Analyse/Recommandations',
-    };
-    return labels[type] || type;
-  };
+  const typeLabel = getPromptTypeLabel(prompt.prompt_type);
+  const typeDescription = getPromptTypeDescription(prompt.prompt_type);
+  const variables = getPromptTypeVariables(prompt.prompt_type);
 
   return (
     <div className="space-y-6">
@@ -75,6 +75,29 @@ export function PromptEditor({ prompt }: PromptEditorProps) {
         </Card>
       )}
 
+      {/* Rôle de ce prompt */}
+      {typeDescription && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Info className="h-5 w-5 text-blue-600" />
+              Rôle de ce prompt
+            </CardTitle>
+            <CardDescription>
+              {typeLabel} (type: {prompt.prompt_type})
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-slate-700">{typeDescription}</p>
+            {variables.length > 0 && (
+              <p className="mt-3 text-xs text-slate-600">
+                Variables disponibles : {variables.map((v) => `{${v}}`).join(', ')}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Prompt Info */}
       <Card>
         <CardHeader>
@@ -83,7 +106,7 @@ export function PromptEditor({ prompt }: PromptEditorProps) {
         <CardContent className="space-y-4">
           <div className="flex items-center gap-2">
             <Badge variant="outline">Module: {prompt.module_code}</Badge>
-            <Badge variant="outline">Type: {getPromptTypeLabel(prompt.prompt_type)}</Badge>
+            <Badge variant="outline">Type: {typeLabel}</Badge>
             <Badge variant="outline">Version: {prompt.version}</Badge>
             {prompt.tenant_id ? (
               <Badge variant="secondary">
@@ -126,7 +149,7 @@ export function PromptEditor({ prompt }: PromptEditorProps) {
               className="font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground">
-              Variables disponibles selon le type de prompt: {'{columns}'}, {'{sampleData}'}, {'{context}'}, {'{data}'}, {'{mappedColumns}'}, {'{issues}'}, {'{stockEntries}'}, {'{analysisMetadata}'}
+              Variables pour ce type : {variables.map((v) => `{${v}}`).join(', ')}
             </p>
           </div>
 

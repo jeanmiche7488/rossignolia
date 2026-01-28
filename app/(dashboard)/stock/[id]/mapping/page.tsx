@@ -15,6 +15,7 @@ const TARGET_FIELDS = [
   { code: 'product_name', label: 'Product Name', description: 'Product name', required: false },
   { code: 'quantity', label: 'Quantity', description: 'Stock quantity', required: true },
   { code: 'unit_cost', label: 'Unit Cost', description: 'Cost per unit', required: false },
+  { code: 'currency', label: 'Currency', description: 'ISO code (EUR, USD, etc.) — important if unit cost uses multiple currencies', required: false },
   { code: 'total_value', label: 'Total Value', description: 'Total stock value', required: false },
   { code: 'location', label: 'Location', description: 'Warehouse location', required: false },
   { code: 'category', label: 'Category', description: 'Product category', required: false },
@@ -23,9 +24,10 @@ const TARGET_FIELDS = [
   { code: 'days_since_last_movement', label: 'Days Since Last Movement', description: 'Days since last movement', required: false },
 ];
 
-type ColumnWithSource = {
-  column: string;
-  sourceFiles: string[];
+type AnalysisFileMeta = {
+  file_name: string;
+  source_type?: string;
+  row_count?: number;
 };
 
 export default function MappingConfirmationPage() {
@@ -36,7 +38,9 @@ export default function MappingConfirmationPage() {
 
   const [analysis, setAnalysis] = useState<any>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [initialMapping, setInitialMapping] = useState<Record<string, string>>({});
   const [columnSources, setColumnSources] = useState<Record<string, string[]>>({});
+  const [files, setFiles] = useState<AnalysisFileMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,11 +78,13 @@ export default function MappingConfirmationPage() {
       setAnalysis(data);
       const proposedMapping = (data.mapped_columns as Record<string, string>) || {};
       setMapping(proposedMapping);
-      
+      setInitialMapping(proposedMapping);
+
       // Get column sources from metadata
       const metadata = (data.metadata as any) || {};
       const mappingMetadata = metadata.mapping || {};
       setColumnSources(mappingMetadata.column_sources || {});
+      setFiles((metadata.files as AnalysisFileMeta[]) || []);
       
       // Load not available fields from metadata
       const notAvailableFromMetadata = mappingMetadata.not_available_fields || [];
@@ -94,48 +100,36 @@ export default function MappingConfirmationPage() {
   // Track which fields are marked as "not available"
   const [notAvailableFields, setNotAvailableFields] = useState<Set<string>>(new Set());
 
-  // Group columns by target field
-  const groupedByTarget = () => {
-    const groups: Record<string, ColumnWithSource[]> = {};
-    
-    TARGET_FIELDS.forEach((target) => {
-      groups[target.code] = [];
-    });
+  const originalColumns = (analysis?.original_columns as string[]) || [];
 
-    const originalColumns = (analysis?.original_columns as string[]) || [];
-    originalColumns.forEach((col) => {
-      const targetField = mapping[col];
-      if (targetField && groups[targetField] && targetField !== '__not_available__') {
-        groups[targetField].push({
-          column: col,
-          sourceFiles: columnSources[col] || ['Unknown'],
-        });
-      }
-    });
+  // Columns that exist in a given file
+  const getColumnsInFile = (file: AnalysisFileMeta) =>
+    originalColumns.filter((col) => (columnSources[col] || []).includes(file.file_name));
 
-    return groups;
-  };
+  // Column from this file currently mapped to this target
+  const getCurrentColForFileTarget = (targetCode: string, file: AnalysisFileMeta) =>
+    getColumnsInFile(file).find((col) => mapping[col] === targetCode) ?? null;
 
-  // Get unmapped columns for a specific target field
-  const getUnmappedColumnsForTarget = (targetCode: string) => {
-    const originalColumns = (analysis?.original_columns as string[]) || [];
-    return originalColumns.filter((col) => {
-      const mappedTo = mapping[col];
-      return !mappedTo || mappedTo === '' || mappedTo === '__not_available__';
-    });
-  };
+  // Column from this file initially (at load) mapped to this target
+  const getInitialColForFileTarget = (targetCode: string, file: AnalysisFileMeta) =>
+    getColumnsInFile(file).find((col) => initialMapping[col] === targetCode) ?? null;
 
-  const updateMapping = (sourceColumn: string, targetField: string) => {
+  // Set mapping for (file, target): newValue is '__no_data__' or a column name
+  const setMappingForFileTarget = (file: AnalysisFileMeta, targetCode: string, newValue: string) => {
+    const cols = getColumnsInFile(file);
     setMapping((prev) => {
-      const newMapping = { ...prev };
-      if (targetField === '' || targetField === '__unmap__') {
-        delete newMapping[sourceColumn];
-      } else {
-        newMapping[sourceColumn] = targetField;
-      }
-      return newMapping;
+      const next = { ...prev };
+      cols.forEach((col) => {
+        if (next[col] === targetCode) delete next[col];
+      });
+      if (newValue !== '__no_data__') next[newValue] = targetCode;
+      return next;
     });
   };
+
+  // For card styling: is this target mapped from at least one file?
+  const isTargetMapped = (targetCode: string) =>
+    files.some((f) => getCurrentColForFileTarget(targetCode, f));
 
   const markFieldAsNotAvailable = (targetCode: string, mark: boolean) => {
     setNotAvailableFields((prev) => {
@@ -186,7 +180,7 @@ export default function MappingConfirmationPage() {
         .from('analyses')
         .update({
           mapped_columns: confirmedMapping,
-          status: 'processing',
+          status: 'ready_for_cleaning',
           metadata: {
             ...(analysis.metadata || {}),
             mapping: {
@@ -202,18 +196,7 @@ export default function MappingConfirmationPage() {
 
       if (updateError) throw updateError;
 
-      const processResponse = await fetch('/api/analyze/clean', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analysisId }),
-      });
-
-      if (!processResponse.ok) {
-        const errorData = await processResponse.json();
-        throw new Error(errorData.error || 'Error starting cleaning phase');
-      }
-
-      router.push(`/stock/${analysisId}`);
+      router.push(`/stock/${analysisId}/cleaning`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error confirming mapping');
       setSaving(false);
@@ -252,16 +235,14 @@ export default function MappingConfirmationPage() {
     );
   }
 
-  const groups = groupedByTarget();
-  const originalColumns = (analysis?.original_columns as string[]) || [];
   const unmappedColumns = originalColumns.filter((col) => !mapping[col] || mapping[col] === '');
 
   // Determine analysis steps for stepper
   const steps = [
     { id: 'upload', label: 'Upload', path: `/stock/${analysisId}`, status: 'completed' as const },
     { id: 'mapping', label: 'Mapping', path: `/stock/${analysisId}/mapping`, status: 'in_progress' as const },
-    { id: 'cleaning', label: 'Cleaning', path: `/stock/${analysisId}`, status: 'pending' as const },
-    { id: 'analysis', label: 'Analysis', path: `/stock/${analysisId}`, status: 'pending' as const },
+    { id: 'cleaning', label: 'Cleaning', path: `/stock/${analysisId}/cleaning`, status: 'pending' as const },
+    { id: 'analysis', label: 'Analyse', path: `/stock/${analysisId}/analysis`, status: 'pending' as const },
   ];
 
   return (
@@ -292,22 +273,20 @@ export default function MappingConfirmationPage() {
           </Card>
         )}
 
-        {/* Grouped by Target Field */}
+        {/* One block per target field: one row per file, modify mapping in place */}
         <div className="space-y-3">
           {TARGET_FIELDS.map((target) => {
-            const columns = groups[target.code] || [];
-            const isMapped = columns.length > 0;
+            const isMapped = isTargetMapped(target.code);
             const isNotAvailable = notAvailableFields.has(target.code);
-            const unmappedColumns = getUnmappedColumnsForTarget(target.code);
 
             return (
-              <Card 
-                key={target.code} 
+              <Card
+                key={target.code}
                 className={
-                  isNotAvailable 
-                    ? 'border-orange-200 bg-orange-50/50' 
-                    : isMapped 
-                    ? 'border-green-200 bg-green-50/50' 
+                  isNotAvailable
+                    ? 'border-orange-200 bg-orange-50/50'
+                    : isMapped
+                    ? 'border-green-200 bg-green-50/50'
                     : target.required
                     ? 'border-red-200 bg-red-50/30'
                     : 'border-slate-200'
@@ -320,104 +299,102 @@ export default function MappingConfirmationPage() {
                         {target.label}
                         {target.required && <span className="text-red-600 text-xs">*</span>}
                         {isMapped && <Check className="h-3.5 w-3.5 text-green-600" />}
-                        {isNotAvailable && <span className="text-xs text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded">Not Available</span>}
+                        {isNotAvailable && (
+                          <span className="text-xs text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded">
+                            Not Available
+                          </span>
+                        )}
                       </CardTitle>
                       <CardDescription className="text-xs mt-0.5">{target.description}</CardDescription>
                     </div>
-                    {isMapped && (
-                      <span className="text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded">
-                        {columns.length} source{columns.length > 1 ? 's' : ''}
-                      </span>
-                    )}
                   </div>
                 </CardHeader>
                 <CardContent className="pt-2">
-                  {/* Mapped columns */}
-                  {columns.length > 0 && (
-                    <div className="space-y-1.5 mb-3">
-                      {columns.map(({ column, sourceFiles }) => (
-                        <div
-                          key={column}
-                          className="flex items-center gap-2 p-2 bg-white rounded border border-green-200 hover:border-green-300 transition-colors"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-medium text-xs truncate">{column}</span>
-                              <ArrowRight className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                              <span className="text-xs font-semibold text-green-700">{target.label}</span>
-                            </div>
-                            <div className="flex items-center gap-1 mt-0.5">
-                              <FileText className="h-2.5 w-2.5 text-slate-400 flex-shrink-0" />
-                              <span className="text-xs text-slate-500 truncate">
-                                {sourceFiles.length === 1
-                                  ? sourceFiles[0]
-                                  : `${sourceFiles.length} files: ${sourceFiles.slice(0, 2).join(', ')}${sourceFiles.length > 2 ? '...' : ''}`}
-                              </span>
-                            </div>
-                          </div>
-                          <select
-                            value={target.code}
-                            onChange={(e) => updateMapping(column, e.target.value)}
-                            className="flex h-7 w-32 rounded border border-input bg-transparent px-1.5 py-0.5 text-xs"
+                  {files.length > 0 ? (
+                    <div className="space-y-2">
+                      {files.map((file) => {
+                        const currentCol = getCurrentColForFileTarget(target.code, file);
+                        const initialCol = getInitialColForFileTarget(target.code, file);
+                        const columnsInFile = getColumnsInFile(file);
+                        const isDesaffecte = initialCol != null && initialCol !== currentCol;
+                        const isReaffecte = currentCol != null && initialMapping[currentCol] !== target.code;
+
+                        return (
+                          <div
+                            key={file.file_name}
+                            className={`rounded border px-3 py-2 ${
+                              isDesaffecte
+                                ? 'border-red-200 bg-red-50/50'
+                                : isReaffecte
+                                ? 'border-emerald-300 bg-emerald-50/50'
+                                : 'border-slate-200 bg-white'
+                            }`}
                           >
-                            <option value="__unmap__">-- Unmap --</option>
-                            {TARGET_FIELDS.map((t) => (
-                              <option key={t.code} value={t.code}>
-                                {t.label} {t.required && '*'}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <FileText className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                                <span className="text-xs font-medium truncate">{file.file_name}</span>
+                                {file.source_type && (
+                                  <span className="text-[10px] text-slate-500 border border-slate-200 rounded px-1 py-0.5">
+                                    {file.source_type}
+                                  </span>
+                                )}
+                                {typeof file.row_count === 'number' && (
+                                  <span className="text-[10px] text-slate-500">{file.row_count} lignes</span>
+                                )}
+                              </div>
+                              <select
+                                value={currentCol ?? '__no_data__'}
+                                onChange={(e) => setMappingForFileTarget(file, target.code, e.target.value)}
+                                className="h-8 min-w-[140px] rounded border border-input bg-white px-2 py-1 text-xs"
+                              >
+                                <option value="__no_data__">No data</option>
+                                {columnsInFile.map((col) => (
+                                  <option key={col} value={col}>
+                                    {col}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {isDesaffecte && (
+                              <p className="text-xs text-red-700 mt-1.5 flex items-center gap-1">
+                                <span className="font-medium">« {initialCol} »</span>
+                                désaffecté (mapping modifié)
+                              </p>
+                            )}
+                            {isReaffecte && (
+                              <p className="text-xs text-emerald-700 mt-1.5 flex items-center gap-1">
+                                <span className="font-medium">« {currentCol} »</span>
+                                réaffecté ici
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
+                  ) : null}
 
-                  {/* Add column manually */}
-                  {!isNotAvailable && (
-                    <div className="space-y-1.5">
-                      {unmappedColumns.length > 0 && (
-                        <select
-                          onChange={(e) => {
-                            if (e.target.value) {
-                              updateMapping(e.target.value, target.code);
-                              e.target.value = '';
-                            }
-                          }}
-                          className="flex h-7 w-full rounded border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-600 hover:border-slate-400 transition-colors"
-                          defaultValue=""
-                        >
-                          <option value="" disabled>
-                            + Map a column to {target.label}...
-                          </option>
-                          {unmappedColumns.map((col) => (
-                            <option key={col} value={col}>
-                              {col} {columnSources[col] && `(${columnSources[col].join(', ')})`}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
-                      {target.required && !isMapped && (
-                        <button
-                          onClick={() => markFieldAsNotAvailable(target.code, !isNotAvailable)}
-                          className="w-full text-left text-xs text-orange-600 hover:text-orange-700 py-1 px-2 rounded hover:bg-orange-50 transition-colors"
-                        >
-                          {isNotAvailable ? '✓ Marked as not available' : '→ Mark as "Not Available" (data not in files)'}
-                        </button>
-                      )}
-                    </div>
+                  {!isNotAvailable && target.required && !isMapped && (
+                    <button
+                      onClick={() => markFieldAsNotAvailable(target.code, !isNotAvailable)}
+                      className="mt-3 w-full text-left text-xs text-orange-600 hover:text-orange-700 py-1.5 px-2 rounded hover:bg-orange-50 transition-colors"
+                    >
+                      {isNotAvailable
+                        ? '✓ Marqué comme non disponible'
+                        : '→ Marquer comme "Non disponible" (donnée absente des fichiers)'}
+                    </button>
                   )}
 
                   {isNotAvailable && (
-                    <div className="flex items-center justify-between p-2 bg-orange-50 rounded border border-orange-200">
+                    <div className="flex items-center justify-between p-2 bg-orange-50 rounded border border-orange-200 mt-3">
                       <span className="text-xs text-orange-700">
-                        This field is marked as "Not Available" - data is not present in the uploaded files.
+                        Ce champ est marqué "Non disponible" — absent des fichiers chargés.
                       </span>
                       <button
                         onClick={() => markFieldAsNotAvailable(target.code, false)}
                         className="text-xs text-orange-600 hover:text-orange-700 underline"
                       >
-                        Undo
+                        Annuler
                       </button>
                     </div>
                   )}

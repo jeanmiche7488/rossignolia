@@ -67,6 +67,12 @@ export default async function AnalysisDetailPage({ params }: AnalysisDetailPageP
   if (analysis.status === 'mapping_pending') {
     redirect(`/stock/${id}/mapping`);
   }
+  if (analysis.status === 'ready_for_cleaning' || analysis.status === 'cleaning_in_progress') {
+    redirect(`/stock/${id}/cleaning`);
+  }
+  if (analysis.status === 'ready_for_analysis' || analysis.status === 'analysis_in_progress') {
+    redirect(`/stock/${id}/analysis`);
+  }
 
   // Get stock entries for this analysis
   const { data: stockEntries } = await supabase
@@ -144,6 +150,10 @@ export default async function AnalysisDetailPage({ params }: AnalysisDetailPageP
     const variants: Record<string, string> = {
       completed: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
       processing: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+      ready_for_cleaning: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+      cleaning_in_progress: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+      ready_for_analysis: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+      analysis_in_progress: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
       failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
       pending: 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300',
       mapping_pending: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
@@ -152,6 +162,10 @@ export default async function AnalysisDetailPage({ params }: AnalysisDetailPageP
     const labels: Record<string, string> = {
       completed: 'Complétée',
       processing: 'En cours',
+      ready_for_cleaning: 'Prête pour cleaning',
+      cleaning_in_progress: 'Cleaning en cours',
+      ready_for_analysis: 'Prête pour analyse',
+      analysis_in_progress: 'Analyse en cours',
       failed: 'Échouée',
       pending: 'En attente',
       mapping_pending: 'Mapping en attente',

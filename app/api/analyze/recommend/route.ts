@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerComponentClient } from '@/lib/db/supabase-server';
 import { createClient } from '@supabase/supabase-js';
-import { generateRecommendations } from '@/lib/ai/gemini';
+import { generateRecommendationsFromFacts } from '@/lib/ai/gemini';
 
 export async function POST(request: Request) {
   // Store analysisId early for error handling (body can only be read once)
@@ -58,38 +58,38 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Analyse non trouvée' }, { status: 404 });
     }
 
-    // Get stock entries for this analysis
-    const { data: stockEntries, error: entriesError } = await supabaseAdmin
-      .from('stock_entries')
-      .select('*')
-      .eq('analysis_id', analysisId)
-      .limit(1000); // Limit for Gemini context
+    // Marquer l'analyse "en cours" (phase analyse)
+    await supabaseAdmin.from('analyses').update({ status: 'analysis_in_progress' }).eq('id', analysisId);
 
-    if (entriesError || !stockEntries || stockEntries.length === 0) {
+    const meta =
+      analysis.metadata && typeof analysis.metadata === 'object' && !Array.isArray(analysis.metadata)
+        ? (analysis.metadata as Record<string, unknown>)
+        : {};
+    const analysisMeta = (meta as any).analysis || {};
+    const facts = analysisMeta.facts_json;
+
+    if (!facts) {
       return NextResponse.json(
-        { error: 'Aucune donnée de stock trouvée' },
+        { error: 'Aucun facts JSON disponible. Exécutez le Python avant de générer les recommandations.' },
         { status: 400 }
       );
     }
 
-    // Call Gemini for recommendations
-    const recommendationsResult = await generateRecommendations({
-      stockEntries: stockEntries.map((entry) => ({
-        sku: entry.sku,
-        product_name: entry.product_name,
-        quantity: entry.quantity,
-        unit_cost: entry.unit_cost,
-        total_value: entry.total_value,
-        location: entry.location,
-        category: entry.category,
-        supplier: entry.supplier,
-        last_movement_date: entry.last_movement_date,
-        days_since_last_movement: entry.days_since_last_movement,
-      })),
+    const promptReco = (analysisMeta.prompt_reco_override as string) || '';
+    if (!promptReco.trim()) {
+      return NextResponse.json(
+        { error: 'Prompt recommandations manquant (prompt_reco_override).' },
+        { status: 400 }
+      );
+    }
+
+    // Call Gemini for recommendations FROM FACTS
+    const recommendationsResult = await generateRecommendationsFromFacts({
+      facts,
+      prompt: promptReco,
       analysisMetadata: {
         tenant_id: analysis.tenant_id,
         analysis_name: analysis.name,
-        total_entries: stockEntries.length,
       },
       tenantId: analysis.tenant_id,
       useDbPrompt: true,

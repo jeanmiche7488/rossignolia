@@ -2,9 +2,10 @@ import { createServerComponentClient } from '@/lib/db/supabase-server';
 import { redirect } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
-import { ArrowLeft, FileText, Edit } from 'lucide-react';
+import { ArrowLeft, FileText } from 'lucide-react';
+import { getPromptTypeLabel, getPromptTypeDescription } from '@/lib/utils/prompt-types';
+import { PromptRow } from './prompt-row';
 
 export default async function PromptsPage() {
   const supabase = await createServerComponentClient();
@@ -56,15 +57,6 @@ export default async function PromptsPage() {
       promptsByModule[moduleCode][promptType].push(prompt);
     });
   }
-
-  const getPromptTypeLabel = (type: string) => {
-    const labels: Record<string, string> = {
-      mapping: 'Mapping',
-      cleaning: 'Nettoyage',
-      advisor: 'Analyse/Recommandations',
-    };
-    return labels[type] || type;
-  };
 
   const getModuleLabel = (code: string) => {
     const labels: Record<string, string> = {
@@ -119,37 +111,12 @@ export default async function PromptsPage() {
                         {promptList
                           .filter((p: any) => p.is_active)
                           .map((prompt: any) => (
-                            <div
+                            <PromptRow
                               key={prompt.id}
-                              className="flex items-center justify-between p-3 bg-slate-50 rounded border"
-                            >
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-medium">{prompt.title}</span>
-                                  <Badge variant="outline" className="text-xs">
-                                    v{prompt.version}
-                                  </Badge>
-                                  {prompt.tenant_id ? (
-                                    <Badge variant="secondary" className="text-xs">
-                                      {prompt.tenants?.name || 'Tenant spécifique'}
-                                    </Badge>
-                                  ) : (
-                                    <Badge className="text-xs bg-blue-100 text-blue-700">
-                                      Global
-                                    </Badge>
-                                  )}
-                                </div>
-                                <p className="text-sm text-muted-foreground line-clamp-2">
-                                  {prompt.content.substring(0, 150)}...
-                                </p>
-                              </div>
-                              <Link href={`/admin/prompts/${prompt.id}/edit`}>
-                                <Button variant="outline" size="sm">
-                                  <Edit className="mr-2 h-4 w-4" />
-                                  Modifier
-                                </Button>
-                              </Link>
-                            </div>
+                              prompt={prompt}
+                              typeLabel={getPromptTypeLabel(prompt.prompt_type)}
+                              typeDescription={getPromptTypeDescription(prompt.prompt_type)}
+                            />
                           ))}
                       </div>
                     </div>
