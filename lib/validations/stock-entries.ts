@@ -12,7 +12,7 @@ export const stockEntrySchema = z.object({
   product_name: z.string().nullable().optional(),
   quantity: z.number().nullable().optional(),
   unit_cost: z.number().nullable().optional(),
-  currency: z.string().nullable().optional(),
+  local_currency: z.string().nullable().optional(),
   unit_cost_eur: z.number().nullable().optional(),
   total_value: z.number().nullable().optional(),
   location: z.string().nullable().optional(),

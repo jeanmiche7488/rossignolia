@@ -33,7 +33,7 @@ export function AnalysisDetailClient({
     
     if (stepId === 'cleaning') {
       if (analysisStatus === 'cleaning_in_progress') return 'in_progress';
-      if (analysisStatus === 'ready_for_cleaning') return 'in_progress';
+      if (analysisStatus === 'ready_for_cleaning' || analysisStatus === 'cleaning_prepared') return 'in_progress';
       if (analysisStatus === 'ready_for_analysis' || hasStockEntries) return 'completed';
       if (analysisStatus === 'mapping_pending' || analysisStatus === 'mapping_in_progress') return 'pending';
       return 'pending';
@@ -79,7 +79,7 @@ export function AnalysisDetailClient({
   // Determine current step
   const getCurrentStep = () => {
     if (analysisStatus === 'mapping_in_progress' || analysisStatus === 'mapping_pending') return 'mapping';
-    if (analysisStatus === 'ready_for_cleaning' || analysisStatus === 'cleaning_in_progress') return 'cleaning';
+    if (analysisStatus === 'ready_for_cleaning' || analysisStatus === 'cleaning_prepared' || analysisStatus === 'cleaning_in_progress') return 'cleaning';
     if (analysisStatus === 'ready_for_analysis' || hasStockEntries) return 'analysis';
     return 'upload';
   };

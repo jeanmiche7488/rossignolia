@@ -10,12 +10,13 @@ import Link from 'next/link';
 import { AnalysisStepper } from '@/components/analysis/analysis-stepper';
 
 // Target schema fields - using English names to match database
+// Note: unit_cost_eur is NOT here because it's calculated, not mapped
 const TARGET_FIELDS = [
   { code: 'sku', label: 'SKU', description: 'Product identifier', required: true },
   { code: 'product_name', label: 'Product Name', description: 'Product name', required: false },
   { code: 'quantity', label: 'Quantity', description: 'Stock quantity', required: true },
-  { code: 'unit_cost', label: 'Unit Cost', description: 'Cost per unit', required: false },
-  { code: 'currency', label: 'Currency', description: 'ISO code (EUR, USD, etc.) — important if unit cost uses multiple currencies', required: false },
+  { code: 'unit_cost', label: 'Unit Cost (Local Currency)', description: 'Cost per unit in original currency', required: false },
+  { code: 'local_currency', label: 'Local Currency', description: 'ISO code (EUR, USD, etc.) — can be mapped or inferred from column name (e.g. "Cost USD" → USD)', required: false },
   { code: 'total_value', label: 'Total Value', description: 'Total stock value', required: false },
   { code: 'location', label: 'Location', description: 'Warehouse location', required: false },
   { code: 'category', label: 'Category', description: 'Product category', required: false },

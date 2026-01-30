@@ -35,14 +35,12 @@ export default async function AnalysisPrepPage({ params }: AnalysisPrepPageProps
   const { data: stockEntries } = await supabase.from('stock_entries').select('id').eq('analysis_id', id).limit(1);
   const { data: recommendations } = await supabase.from('recommendations').select('id').eq('analysis_id', id).limit(1);
 
-  // Prompts analyse split (tenant-specific puis global)
+  // Prompt for codegen (tenant-specific then global)
   const promptCodegen = await getSystemPrompt(profile.tenant_id, 'stock', 'analysis_codegen');
-  const promptReco = await getSystemPrompt(profile.tenant_id, 'stock', 'analysis_reco');
 
   const metadata = (analysis.metadata as Record<string, unknown>) || {};
   const analysisMeta = (metadata as any)?.analysis || {};
   const promptCodegenOverride = analysisMeta.prompt_codegen_override as string | undefined;
-  const promptRecoOverride = analysisMeta.prompt_reco_override as string | undefined;
   const pythonOverride = analysisMeta.python_override as string | undefined;
   const pythonGenerated = analysisMeta.python_generated as string | undefined;
   const factsJson = analysisMeta.facts_json as Record<string, unknown> | undefined;
@@ -59,9 +57,9 @@ export default async function AnalysisPrepPage({ params }: AnalysisPrepPageProps
       <div className="container mx-auto p-8 space-y-6 max-w-5xl">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold">Préparer l’analyse</h1>
+            <h1 className="text-3xl font-bold">Préparer l'analyse</h1>
             <p className="text-muted-foreground mt-1">
-              1) Valider/modifier le prompt, 2) générer/éditer le Python, 3) lancer l’analyse.
+              Générez le script d'analyse, vérifiez-le, puis lancez l'analyse pour obtenir des recommandations.
             </p>
           </div>
           <div className="flex gap-2">
@@ -78,8 +76,7 @@ export default async function AnalysisPrepPage({ params }: AnalysisPrepPageProps
           analysisId={id}
           tenantId={profile.tenant_id}
           initialPromptCodegen={promptCodegenOverride ?? promptCodegen?.content ?? ''}
-          initialPromptReco={promptRecoOverride ?? promptReco?.content ?? ''}
-          initialPython={pythonOverride ?? ''}
+          initialPython={pythonOverride ?? pythonGenerated ?? ''}
           initialPythonGenerated={pythonGenerated ?? ''}
           initialFacts={factsJson ?? null}
         />
@@ -87,4 +84,3 @@ export default async function AnalysisPrepPage({ params }: AnalysisPrepPageProps
     </div>
   );
 }
-

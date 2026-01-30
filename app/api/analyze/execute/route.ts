@@ -44,14 +44,39 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Aucun code Python à exécuter (générez-le d'abord)." }, { status: 400 });
     }
 
+    console.log('[Execute] Starting Python execution for analysis:', analysisId);
+    console.log('[Execute] Python source:', analysisMeta.python_override ? 'python_override (custom)' : 'python_generated');
+    console.log('[Execute] Python code length:', pythonCode.length);
+    console.log('[Execute] Python code hash:', pythonCode.split('').reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) | 0, 0));
+
     // Mark analysis running
     await supabaseAdmin.from('analyses').update({ status: 'analysis_in_progress' }).eq('id', analysisId);
 
     // Spawn python (expects script reads JSONL from stdin and prints JSON facts to stdout)
-    const child = spawn('python', ['-u', '-c', pythonCode], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    // Try 'python' first, fallback to 'python3' or 'py' on Windows
+    console.log('[Execute] Spawning Python process...');
+    
+    let child;
+    const pythonCommands = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+    let spawnError: Error | null = null;
+    
+    for (const cmd of pythonCommands) {
+      try {
+        child = spawn(cmd, ['-u', '-c', pythonCode], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+        console.log('[Execute] Using Python command:', cmd);
+        break;
+      } catch (e) {
+        spawnError = e as Error;
+        console.warn('[Execute] Failed to spawn with', cmd, ':', e);
+      }
+    }
+    
+    if (!child) {
+      throw new Error(`Impossible de démarrer Python. Erreur: ${spawnError?.message}. Vérifiez que Python est installé.`);
+    }
 
     let stdout = '';
     let stderr = '';
@@ -79,7 +104,18 @@ export async function POST(request: Request) {
       if (!rows || rows.length === 0) break;
 
       for (const row of rows) {
-        child.stdin.write(JSON.stringify(row) + '\n');
+        // Normalize dates to remove timezone info (prevents Python datetime comparison issues)
+        const normalizedRow = { ...row };
+        if (normalizedRow.last_movement_date) {
+          // Convert ISO string with timezone to simple ISO string without timezone
+          const d = new Date(normalizedRow.last_movement_date);
+          normalizedRow.last_movement_date = d.toISOString().replace('Z', '').split('.')[0];
+        }
+        if (normalizedRow.created_at) {
+          const d = new Date(normalizedRow.created_at);
+          normalizedRow.created_at = d.toISOString().replace('Z', '').split('.')[0];
+        }
+        child.stdin.write(JSON.stringify(normalizedRow) + '\n');
       }
       totalSent += rows.length;
       lastId = rows[rows.length - 1].id;
@@ -87,6 +123,7 @@ export async function POST(request: Request) {
     }
 
     child.stdin.end();
+    console.log('[Execute] Sent', totalSent, 'rows to Python stdin');
 
     const exitCode: number = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -104,7 +141,12 @@ export async function POST(request: Request) {
       });
     });
 
+    console.log('[Execute] Python process exited with code:', exitCode);
+    console.log('[Execute] stdout length:', stdout.length);
+    console.log('[Execute] stderr:', stderr.slice(0, 500));
+
     if (exitCode !== 0) {
+      console.error('[Execute] Python failed! stderr:', stderr.slice(0, 2000));
       await supabaseAdmin.from('analyses').update({ status: 'failed' }).eq('id', analysisId);
       return NextResponse.json(
         { error: `Exécution Python échouée (code ${exitCode})`, stderr: stderr.slice(0, 8000) },
@@ -115,7 +157,9 @@ export async function POST(request: Request) {
     let facts: any = null;
     try {
       facts = JSON.parse(stdout.trim());
+      console.log('[Execute] Facts parsed successfully, keys:', Object.keys(facts));
     } catch (e) {
+      console.error('[Execute] Failed to parse stdout as JSON:', e);
       await supabaseAdmin.from('analyses').update({ status: 'failed' }).eq('id', analysisId);
       return NextResponse.json(
         { error: `Sortie Python non-JSON: ${e instanceof Error ? e.message : String(e)}`, stdout: stdout.slice(0, 2000), stderr: stderr.slice(0, 2000) },
@@ -140,8 +184,10 @@ export async function POST(request: Request) {
       })
       .eq('id', analysisId);
 
+    console.log('[Execute] Analysis execution complete, returning success');
     return NextResponse.json({ success: true, rowsStreamed: totalSent, facts });
   } catch (e) {
+    console.error('[Execute] Error:', e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : 'Une erreur est survenue' },
       { status: 500 }

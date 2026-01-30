@@ -3,6 +3,11 @@
  * Une seule source de vérité pour l'interface admin.
  */
 
+/**
+ * Ordre d'affichage des types de prompts (selon l'ordre d'utilisation dans le flow)
+ */
+export const PROMPT_TYPE_ORDER = ['mapping', 'cleaning', 'analysis_codegen', 'analysis_reco'];
+
 export const PROMPT_TYPE_LABELS: Record<string, string> = {
   mapping: 'Mapping colonnes',
   cleaning: 'Nettoyage des données',

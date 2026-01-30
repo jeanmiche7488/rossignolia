@@ -182,7 +182,10 @@ export async function POST(request: Request) {
     console.log('[Map] Colonnes uniques trouvées (avant filtrage):', allColumns.size);
 
     // Extract columns from aggregated data with file source information
-    const columns = Array.from(allColumns).filter((col) => !col.startsWith('_')); // Exclude metadata columns
+    // IMPORTANT: Sort columns alphabetically for deterministic ordering
+    const columns = Array.from(allColumns)
+      .filter((col) => !col.startsWith('_')) // Exclude metadata columns
+      .sort((a, b) => a.localeCompare(b)); // Alphabetical sort for determinism
     
     // Build column metadata: which file(s) contain each column
     // We need to track this from the actual parsed data, not just from fileRecord.original_columns
@@ -255,27 +258,52 @@ export async function POST(request: Request) {
     console.log('[Map] Colonnes après filtrage (excluant métadonnées):', columns.length);
     console.log('[Map] Sources des colonnes:', JSON.stringify(columnSources, null, 2));
     
-    const sampleData = (allRawData.slice(0, 5) as Record<string, unknown>[]).map((row) => {
-      const sample: Record<string, unknown> = {};
-      columns.forEach((col) => {
-        sample[col] = row[col];
-      });
-      return sample;
-    });
+    // Create deterministic sample data: take 2 rows from each file (sorted by file name)
+    const sortedFileMetadata = [...fileMetadata].sort((a, b) => a.file_name.localeCompare(b.file_name));
+    const sampleData: Record<string, unknown>[] = [];
     
-    console.log('[Map] Échantillon de données préparé:', sampleData.length, 'lignes');
+    for (const fileMeta of sortedFileMetadata) {
+      const fileRows = allRawData.filter((row) => row['_source_file'] === fileMeta.file_name);
+      const fileSamples = fileRows.slice(0, 2).map((row) => {
+        const sample: Record<string, unknown> = {};
+        columns.forEach((col) => {
+          sample[col] = row[col];
+        });
+        sample['_source_file'] = row['_source_file']; // Keep source for context
+        return sample;
+      });
+      sampleData.push(...fileSamples);
+    }
+    
+    console.log('[Map] Échantillon de données préparé:', sampleData.length, 'lignes (déterministe par fichier)');
 
     console.log('[Map] Colonnes uniques trouvées:', columns.length);
     console.log('[Map] Échantillon de données (3 premières lignes):', JSON.stringify(sampleData.slice(0, 3), null, 2));
     console.log('[Map] Appel à Gemini pour le mapping...');
     
-    // Call Gemini for mapping with context about multiple files
+    // Build detailed context about which columns come from which files
+    // Sort column sources for deterministic output
+    const sortedColumnSources = Object.entries(columnSources)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([col, sources]) => `  - "${col}" → [${sources.sort().join(', ')}]`)
+      .join('\n');
+    
+    // Call Gemini for mapping with detailed context about column sources
     const mappingResult = await mapColumns({
       columns,
       sampleData,
-      context: `Analyse de stock pour le tenant ${analysis.tenant_id}. 
-      Données agrégées depuis ${analysisFiles.length} fichier(s): ${fileMetadata.map(f => `${f.file_name} (${f.source_type}, ${f.row_count} lignes)`).join(', ')}.
-      Les colonnes peuvent provenir de différentes sources et doivent être mappées vers un schéma unifié.`,
+      context: `Analyse de stock pour le tenant ${analysis.tenant_id}.
+
+FICHIERS SOURCES (${analysisFiles.length}):
+${sortedFileMetadata.map(f => `- ${f.file_name} (${f.source_type}, ${f.row_count} lignes)`).join('\n')}
+
+COLONNES ET LEURS SOURCES:
+${sortedColumnSources}
+
+IMPORTANT: 
+- Chaque colonne peut exister dans UN ou PLUSIEURS fichiers.
+- Tu dois mapper TOUTES les colonnes pertinentes, même si elles n'apparaissent que dans un seul fichier.
+- Si deux fichiers ont des colonnes similaires (ex: "SKU" et "Product Code"), mappe les deux vers le même champ cible si elles représentent la même donnée.`,
     }, {
       tenantId: analysis.tenant_id,
       useDbPrompt: true,

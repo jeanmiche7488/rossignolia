@@ -175,7 +175,7 @@ export async function POST(request: Request) {
         product_name: entry.product_name || null,
         quantity: entry.quantity ? Number(entry.quantity) : null,
         unit_cost: entry.unit_cost ? Number(entry.unit_cost) : null,
-        currency: entry.currency ?? null,
+        local_currency: entry.local_currency ?? null,
         unit_cost_eur: entry.unit_cost_eur != null ? Number(entry.unit_cost_eur) : null,
         total_value: entry.total_value ? Number(entry.total_value) : null,
         location: entry.location || null,

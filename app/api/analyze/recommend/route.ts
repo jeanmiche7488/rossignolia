@@ -75,15 +75,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const promptReco = (analysisMeta.prompt_reco_override as string) || '';
-    if (!promptReco.trim()) {
-      return NextResponse.json(
-        { error: 'Prompt recommandations manquant (prompt_reco_override).' },
-        { status: 400 }
-      );
-    }
+    console.log('[Recommend] Analysis found, facts available');
+    
+    // Use stored prompt or default
+    const promptReco = (analysisMeta.prompt_reco_override as string) || 
+      'Analyser le stock et fournir des recommandations actionables pour optimiser la gestion des stocks, identifier les risques et les opportunités d\'amélioration.';
+    
+    console.log('[Recommend] Using prompt:', promptReco.substring(0, 100) + '...');
 
     // Call Gemini for recommendations FROM FACTS
+    console.log('[Recommend] Calling Gemini for recommendations...');
     const recommendationsResult = await generateRecommendationsFromFacts({
       facts,
       prompt: promptReco,
@@ -95,6 +96,8 @@ export async function POST(request: Request) {
       useDbPrompt: true,
     });
 
+    console.log('[Recommend] Gemini returned', recommendationsResult.recommendations.length, 'recommendations');
+
     // Insert recommendations into database
     const recommendations = recommendationsResult.recommendations.map((rec) => ({
       tenant_id: analysis.tenant_id,
@@ -105,8 +108,11 @@ export async function POST(request: Request) {
       description: rec.description,
       action_items: rec.actionItems,
       affected_skus: rec.affectedSkus,
-      estimated_impact: rec.estimatedImpact,
-      python_code: rec.pythonCode,
+      estimated_impact: {
+        ...rec.estimatedImpact,
+        level: rec.level || 'micro',
+        pillar: rec.pillar || 'DORMANCY',
+      },
       status: 'pending',
     }));
 

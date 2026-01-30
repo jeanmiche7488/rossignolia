@@ -60,12 +60,17 @@ export async function POST(request: Request) {
       ? promptCodegen
       : (analysisMeta.prompt_codegen_override as string) || '';
 
+    console.log('[Codegen API] Calling generateAnalysisPython...');
     const result = await generateAnalysisPython({
       datasetProfile,
       prompt,
       tenantId: analysis.tenant_id,
       useDbPrompt: true,
     });
+
+    console.log('[Codegen API] Result received');
+    console.log('[Codegen API] Python code length:', result.pythonCode?.length || 0);
+    console.log('[Codegen API] Notes:', result.notes);
 
     // Save generated python in metadata (non override)
     await supabaseAdmin
@@ -85,6 +90,7 @@ export async function POST(request: Request) {
       })
       .eq('id', analysisId);
 
+    console.log('[Codegen API] Metadata saved, returning response');
     return NextResponse.json({ success: true, pythonCode: result.pythonCode, notes: result.notes });
   } catch (e) {
     return NextResponse.json(

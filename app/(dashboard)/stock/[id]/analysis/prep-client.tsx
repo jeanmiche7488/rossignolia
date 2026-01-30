@@ -5,12 +5,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useRouter } from 'next/navigation';
+import { Loader2, Play, Code, Sparkles, CheckCircle2, AlertCircle, Zap, FileCode, Rocket } from 'lucide-react';
 
 export function AnalysisPrepClient({
   analysisId,
   tenantId,
   initialPromptCodegen,
-  initialPromptReco,
   initialPython,
   initialPythonGenerated,
   initialFacts,
@@ -18,220 +18,282 @@ export function AnalysisPrepClient({
   analysisId: string;
   tenantId: string;
   initialPromptCodegen: string;
-  initialPromptReco: string;
+  initialPromptReco?: string;
   initialPython: string;
   initialPythonGenerated: string;
   initialFacts: Record<string, unknown> | null;
 }) {
   const router = useRouter();
   const [promptCodegen, setPromptCodegen] = useState(initialPromptCodegen);
-  const [promptReco, setPromptReco] = useState(initialPromptReco);
-  const [python, setPython] = useState(initialPython);
+  const [python, setPython] = useState(initialPython || initialPythonGenerated);
   const [pythonGenerated, setPythonGenerated] = useState(initialPythonGenerated);
   const [facts, setFacts] = useState<Record<string, unknown> | null>(initialFacts);
-  const [savingPrompt, setSavingPrompt] = useState(false);
+  
   const [runningCodegen, setRunningCodegen] = useState(false);
-  const [runningExecute, setRunningExecute] = useState(false);
-  const [runningReco, setRunningReco] = useState(false);
+  const [codegenSuccess, setCodegenSuccess] = useState(false);
+  const [runningAnalysis, setRunningAnalysis] = useState(false);
+  const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const canCodegen = useMemo(() => promptCodegen.trim().length > 0, [promptCodegen]);
-  const canReco = useMemo(() => promptReco.trim().length > 0, [promptReco]);
-
-  const saveConfig = async (opts?: { includePython?: boolean }) => {
-    setSavingPrompt(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/analyze/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          analysisId,
-          promptCodegenOverride: promptCodegen,
-          promptRecoOverride: promptReco,
-          pythonOverride: opts?.includePython === false ? undefined : python,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Erreur lors de la sauvegarde');
-      }
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur lors de la sauvegarde');
-    } finally {
-      setSavingPrompt(false);
-    }
-  };
+  const canRunAnalysis = useMemo(() => python.trim().length > 0, [python]);
+  const hasPython = python.trim().length > 0;
 
   const runCodegen = async () => {
     setRunningCodegen(true);
+    setCodegenSuccess(false);
     setError(null);
     try {
-      await saveConfig({ includePython: true });
+      console.log('[Codegen] Saving config...');
+      await fetch('/api/analyze/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysisId, promptCodegenOverride: promptCodegen }),
+      });
+
+      console.log('[Codegen] Calling codegen API...');
       const res = await fetch('/api/analyze/codegen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ analysisId, promptCodegen }),
       });
+      
+      const data = await res.json().catch(() => ({}));
+      console.log('[Codegen] Response status:', res.status);
+      
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'Erreur lors de la génération du Python');
       }
-      const data = await res.json();
+      
       const pythonCode = data.pythonCode as string;
-      setPythonGenerated(pythonCode || '');
-      // Remplir l'éditeur Python si vide (l'utilisateur pourra ensuite le modifier)
-      if (!python.trim() && pythonCode) setPython(pythonCode);
-      router.refresh();
+      console.log('[Codegen] Python code length:', pythonCode?.length || 0);
+      
+      if (pythonCode) {
+        setPythonGenerated(pythonCode);
+        setPython(pythonCode);
+        setCodegenSuccess(true);
+        console.log('[Codegen] State updated with python code');
+      } else {
+        console.warn('[Codegen] No python code in response!');
+        setError('Le code Python n\'a pas été généré. Vérifiez les logs serveur.');
+      }
     } catch (e) {
+      console.error('[Codegen] Error:', e);
       setError(e instanceof Error ? e.message : 'Erreur lors de la génération du Python');
     } finally {
       setRunningCodegen(false);
     }
   };
 
-  const runExecute = async () => {
-    setRunningExecute(true);
+  const runFullAnalysis = async () => {
+    setRunningAnalysis(true);
     setError(null);
+    console.log('[Analysis] Starting full analysis...');
     try {
-      await saveConfig({ includePython: true });
-      const res = await fetch('/api/analyze/execute', {
+      // Step 1: Save Python
+      setCurrentStep('Sauvegarde de la configuration...');
+      console.log('[Analysis] Step 1: Saving config...');
+      console.log('[Analysis] Python to save - length:', python.length);
+      console.log('[Analysis] Python to save - first 100 chars:', python.substring(0, 100));
+      const configRes = await fetch('/api/analyze/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analysisId }),
+        body: JSON.stringify({ analysisId, pythonOverride: python }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Erreur lors de l’exécution du Python');
-      }
-      setFacts(data.facts || null);
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur lors de l’exécution du Python');
-    } finally {
-      setRunningExecute(false);
-    }
-  };
+      console.log('[Analysis] Config saved, status:', configRes.status);
 
-  const runReco = async () => {
-    setRunningReco(true);
-    setError(null);
-    try {
-      await saveConfig({ includePython: true });
-      const res = await fetch('/api/analyze/recommend', {
+      // Step 2: Execute Python
+      setCurrentStep('Exécution du script Python (calcul des facts)...');
+      console.log('[Analysis] Step 2: Executing Python...');
+      const execRes = await fetch('/api/analyze/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ analysisId }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'Erreur lors de la génération des recommandations');
+      const execData = await execRes.json().catch(() => ({}));
+      console.log('[Analysis] Execute response:', execRes.status, execData);
+      if (!execRes.ok) {
+        throw new Error(execData.error || "Erreur lors de l'exécution du Python");
       }
+      setFacts(execData.facts || null);
+
+      // Step 3: Generate recommendations
+      setCurrentStep('Génération des recommandations stratégiques...');
+      console.log('[Analysis] Step 3: Generating recommendations...');
+      const recoRes = await fetch('/api/analyze/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysisId }),
+      });
+      const recoData = await recoRes.json().catch(() => ({}));
+      console.log('[Analysis] Recommend response:', recoRes.status, recoData);
+      if (!recoRes.ok) {
+        throw new Error(recoData.error || 'Erreur lors de la génération des recommandations');
+      }
+
+      // Success - redirect to analysis detail
+      setCurrentStep('Analyse terminée ! Redirection...');
+      console.log('[Analysis] Success! Redirecting...');
       router.push(`/stock/${analysisId}`);
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur lors de la génération des recommandations');
+      console.error('[Analysis] Error:', e);
+      setError(e instanceof Error ? e.message : "Erreur lors de l'analyse");
     } finally {
-      setRunningReco(false);
+      setRunningAnalysis(false);
+      setCurrentStep(null);
     }
   };
 
   return (
     <div className="space-y-6">
-      {error ? (
-        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
-          {error}
+      {/* Error message */}
+      {error && (
+        <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+          <div>
+            <p className="font-medium text-red-800">Erreur</p>
+            <p className="text-sm text-red-700 mt-1">{error}</p>
+          </div>
         </div>
-      ) : null}
+      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>1) Prompt “Codegen Python”</CardTitle>
-          <CardDescription>
-            Ce prompt sert à générer le script Python (qui s’exécutera sur toutes les lignes via streaming JSONL).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea value={promptCodegen} onChange={(e) => setPromptCodegen(e.target.value)} className="min-h-[220px]" />
-          <div className="flex gap-2">
-            <Button onClick={() => saveConfig({ includePython: true })} disabled={savingPrompt || !canCodegen}>
-              {savingPrompt ? 'Sauvegarde…' : 'Sauvegarder'}
-            </Button>
-            <Button onClick={runCodegen} disabled={runningCodegen || !canCodegen}>
-              {runningCodegen ? 'Génération…' : 'Générer le Python'}
-            </Button>
+      {/* Progress indicator */}
+      {currentStep && (
+        <div className="flex items-center gap-3 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+          <div className="relative">
+            <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+            <div className="absolute inset-0 h-6 w-6 animate-ping opacity-30 rounded-full bg-blue-400" />
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>2) Python (exécuté)</CardTitle>
-          <CardDescription>
-            Le Python généré est une base. Vous pouvez le modifier avant exécution.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea value={python} onChange={(e) => setPython(e.target.value)} className="min-h-[220px] font-mono" />
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => saveConfig({ includePython: true })} disabled={savingPrompt}>
-              {savingPrompt ? 'Sauvegarde…' : 'Sauvegarder'}
-            </Button>
-            <Button onClick={runExecute} disabled={runningExecute}>
-              {runningExecute ? 'Exécution…' : 'Exécuter le Python'}
-            </Button>
+          <div>
+            <p className="font-medium text-blue-800">Analyse en cours</p>
+            <p className="text-sm text-blue-600">{currentStep}</p>
           </div>
+        </div>
+      )}
 
-          {pythonGenerated ? (
-            <details className="rounded border bg-white p-3">
-              <summary className="cursor-pointer text-sm font-medium">Voir le Python généré (dernière génération)</summary>
-              <pre className="mt-3 text-xs overflow-auto whitespace-pre-wrap">{pythonGenerated}</pre>
-            </details>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>3) Facts (output exécution)</CardTitle>
-          <CardDescription>
-            Résumé JSON produit par le Python. Gemini produira des recommandations à partir de ces facts (pas des lignes brutes).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {facts ? (
-            <pre className="text-xs overflow-auto whitespace-pre-wrap rounded border bg-white p-3">
-{JSON.stringify(facts, null, 2)}
-            </pre>
-          ) : (
-            <div className="text-sm text-muted-foreground">
-              Aucun facts disponible. Exécutez le Python.
+      {/* Step 1: Prompt for Python generation */}
+      <Card className="border-2 border-slate-200 hover:border-slate-300 transition-colors">
+        <CardHeader className="bg-gradient-to-r from-slate-50 to-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-white rounded-lg shadow-sm">
+              <FileCode className="h-5 w-5 text-slate-600" />
             </div>
-          )}
+            <div>
+              <CardTitle className="text-lg">Étape 1 — Générer le script d'analyse</CardTitle>
+              <CardDescription>
+                Décrivez ce que vous souhaitez analyser. L'IA générera un script Python optimisé.
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-4">
+          <Textarea 
+            value={promptCodegen} 
+            onChange={(e) => setPromptCodegen(e.target.value)} 
+            className="min-h-[140px] text-sm border-2 focus:border-blue-300 transition-colors"
+            placeholder="Ex: Analyser le stock dormant, identifier les surstocks, calculer la valeur bloquée..."
+          />
+          <div className="flex items-center gap-3">
+            <Button 
+              onClick={runCodegen} 
+              disabled={runningCodegen || !canCodegen || runningAnalysis}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {runningCodegen ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Génération en cours...
+                </>
+              ) : (
+                <>
+                  <Code className="mr-2 h-4 w-4" />
+                  Générer le script
+                </>
+              )}
+            </Button>
+            {codegenSuccess && (
+              <span className="flex items-center gap-1.5 text-sm text-green-600">
+                <CheckCircle2 className="h-4 w-4" />
+                Script généré avec succès
+              </span>
+            )}
+          </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>4) Prompt “Recommandations depuis facts”</CardTitle>
-          <CardDescription>
-            Ce prompt transforme les facts JSON en recommandations actionnables.
-          </CardDescription>
+      {/* Step 2: Python editor */}
+      <Card className={`border-2 transition-all ${hasPython ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200'}`}>
+        <CardHeader className={`${hasPython ? 'bg-gradient-to-r from-emerald-50 to-teal-50' : 'bg-gradient-to-r from-slate-50 to-slate-100'}`}>
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg shadow-sm ${hasPython ? 'bg-emerald-100' : 'bg-white'}`}>
+              <Zap className={`h-5 w-5 ${hasPython ? 'text-emerald-600' : 'text-slate-600'}`} />
+            </div>
+            <div className="flex-1">
+              <CardTitle className="text-lg">Étape 2 — Lancer l'analyse</CardTitle>
+              <CardDescription>
+                Vérifiez le script, modifiez-le si besoin, puis lancez l'analyse complète.
+              </CardDescription>
+            </div>
+            {hasPython && (
+              <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-medium">
+                {python.split('\n').length} lignes
+              </span>
+            )}
+          </div>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea value={promptReco} onChange={(e) => setPromptReco(e.target.value)} className="min-h-[220px]" />
-          <div className="flex gap-2">
-            <Button onClick={() => saveConfig({ includePython: true })} disabled={savingPrompt || !canReco}>
-              {savingPrompt ? 'Sauvegarde…' : 'Sauvegarder'}
-            </Button>
-            <Button onClick={runReco} disabled={runningReco || !canReco || !facts}>
-              {runningReco ? 'Génération…' : 'Générer les recommandations'}
+        <CardContent className="pt-4 space-y-4">
+          <Textarea 
+            value={python} 
+            onChange={(e) => setPython(e.target.value)} 
+            className="min-h-[280px] font-mono text-xs border-2 focus:border-emerald-300 transition-colors bg-slate-900 text-slate-100 rounded-lg"
+            placeholder="Le script Python apparaîtra ici après génération..."
+            style={{ fontFamily: 'Consolas, Monaco, "Courier New", monospace' }}
+          />
+          
+          <div className="flex items-center justify-between pt-2">
+            <div className="text-sm text-muted-foreground">
+              {!hasPython && (
+                <span className="flex items-center gap-1.5 text-amber-600">
+                  <AlertCircle className="h-4 w-4" />
+                  Générez d'abord un script (étape 1)
+                </span>
+              )}
+            </div>
+            <Button 
+              onClick={runFullAnalysis} 
+              disabled={runningAnalysis || !canRunAnalysis || runningCodegen}
+              size="lg"
+              className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-lg"
+            >
+              {runningAnalysis ? (
+                <>
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Analyse en cours...
+                </>
+              ) : (
+                <>
+                  <Rocket className="mr-2 h-5 w-5" />
+                  Lancer l'analyse complète
+                </>
+              )}
             </Button>
           </div>
+
+          {/* Facts preview (collapsed by default, shown only if available) */}
+          {facts && (
+            <details className="rounded-lg border-2 border-slate-200 bg-white p-3 mt-4">
+              <summary className="cursor-pointer text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-amber-500" />
+                Voir les facts générés (debug)
+              </summary>
+              <pre className="mt-3 text-xs overflow-auto whitespace-pre-wrap max-h-64 bg-slate-50 p-3 rounded">
+                {JSON.stringify(facts, null, 2)}
+              </pre>
+            </details>
+          )}
         </CardContent>
       </Card>
     </div>
   );
 }
-
